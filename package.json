@@ -1,6 +1,6 @@
 {
   "name": "@ebratz/dynamodb-better-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DynamoDB adapter for Better Auth — multi-table, three-tier query planner, TransactWriteItems transaction support",
   "license": "MIT",
   "author": "Eduardo Bratz <ebratz@gmail.com>",
