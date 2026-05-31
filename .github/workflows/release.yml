@@ -18,7 +18,7 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: "https://registry.npmjs.org"
-      - run: npm ci
+      - run: npm install --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run test:unit
       - run: npm run build
