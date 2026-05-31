@@ -18,7 +18,10 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm install --no-audit --no-fund
+      - name: Install dependencies (no lockfile — works around npm bug #4828)
+        run: |
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
       - run: npx tsc --noEmit
 
   unit-tests:
@@ -32,7 +35,10 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm install --no-audit --no-fund
+      - name: Install dependencies (no lockfile — works around npm bug #4828)
+        run: |
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
       - run: npx vitest run --exclude 'test/adapter.test.ts'
 
   integration-tests:
@@ -55,7 +61,10 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm install --no-audit --no-fund
+      - name: Install dependencies (no lockfile — works around npm bug #4828)
+        run: |
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
       - name: Create DynamoDB tables
         run: |
           # Users
@@ -156,7 +165,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install --no-audit --no-fund
+      - name: Install dependencies (no lockfile — works around npm bug #4828)
+        run: |
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
       - run: npm run build
       - run: npm pack
       - name: Verify package imports from a consumer
