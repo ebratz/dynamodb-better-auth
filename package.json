@@ -1,0 +1,75 @@
+{
+  "name": "@ebratz/dynamodb-better-auth",
+  "version": "0.1.0",
+  "description": "DynamoDB adapter for Better Auth — multi-table, three-tier query planner, TransactWriteItems transaction support",
+  "license": "MIT",
+  "author": "Eduardo Bratz <ebratz@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ebratz/dynamodb-better-auth.git"
+  },
+  "homepage": "https://github.com/ebratz/dynamodb-better-auth#readme",
+  "bugs": {
+    "url": "https://github.com/ebratz/dynamodb-better-auth/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --exclude 'test/adapter.test.ts'",
+    "test:integration": "vitest run test/adapter.test.ts",
+    "test:coverage": "vitest run --coverage --exclude 'test/adapter.test.ts'",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm run test:unit && npm run build",
+    "publish:public": "npm publish --access public"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1057.0",
+    "@aws-sdk/lib-dynamodb": "^3.1057.0",
+    "@aws-sdk/util-dynamodb": "^3.996.2",
+    "better-auth": "^1.6.12"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1057.0",
+    "@aws-sdk/lib-dynamodb": "^3.1057.0",
+    "@aws-sdk/util-dynamodb": "^3.996.2",
+    "@better-auth/test-utils": "^1.6.12",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "better-auth": "^1.6.12",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "better-auth",
+    "dynamodb",
+    "adapter",
+    "authentication",
+    "auth",
+    "aws"
+  ]
+}

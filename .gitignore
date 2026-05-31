@@ -1,0 +1,6 @@
+node_modules/
+dist/
+coverage/
+.pi/
+*.log
+.DS_Store
