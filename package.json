@@ -53,6 +53,11 @@
     "@aws-sdk/util-dynamodb": "^3.996.2",
     "better-auth": "^1.6.12"
   },
+  "overrides": {
+    "@better-auth/test-utils": {
+      "vitest": "^3.2.4"
+    }
+  },
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.1057.0",
     "@aws-sdk/lib-dynamodb": "^3.1057.0",
