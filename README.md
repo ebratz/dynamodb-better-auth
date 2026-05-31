@@ -933,10 +933,59 @@ test/
 PRs welcome. Please:
 
 1. Open an issue first for non-trivial changes — saves both of us time.
-2. Add tests for new behavior; coverage thresholds are enforced (`statements ≥ 85`, `branches ≥ 75`, `functions ≥ 80`).
-3. Keep the existing strict TypeScript settings; no `any` in production code without justification.
-4. Update `CHANGELOG.md` under the `[Unreleased]` heading.
+2. **Use Conventional Commits in your PR title.** The release bot reads it to decide the version bump:
+   - `feat: add organization model support` → minor bump
+   - `fix: ConsumeOne returning null` → patch bump
+   - `feat!: drop Node 18 support` → major bump
+   - `chore:`, `ci:`, `docs:`, `test:`, `refactor:`, `style:`, `build:`, `perf:` → no version bump
+3. Add tests for new behavior; coverage thresholds are enforced (`statements ≥ 85`, `branches ≥ 75`, `functions ≥ 80`).
+4. Keep the existing strict TypeScript settings; no `any` in production code without justification.
 5. The integration test suite must pass against DynamoDB Local (`docker compose up -d && npm run test:integration`).
+6. You do **not** need to update `CHANGELOG.md` — it's generated automatically from commit messages.
+
+---
+
+## Releases
+
+Releases are fully automated by [release-please](https://github.com/googleapis/release-please-action). The flow:
+
+```
+PR opened ──► CI runs (typecheck, unit, integration, pack-smoke)
+              │
+              ├─ PR title validator checks Conventional Commits format
+              │
+              └─► All green required before merge (branch protection)
+                  │
+                  ▼
+                Merge to main
+                  │
+                  ▼
+                release-please bot opens/updates a "Release PR" with:
+                  • bumped version in package.json
+                  • new CHANGELOG.md entries derived from commits
+                  │
+                  ▼
+                Merge the Release PR
+                  │
+                  ▼
+                Tag v0.x.y created automatically
+                  │
+                  ▼
+                npm publish --provenance runs in CI
+                  │
+                  ▼
+                Package live on npmjs.com 🎉
+```
+
+### For maintainers
+
+To cut a release: merge the open Release PR. That's it.
+
+To skip a release for a batch of changes that don't warrant publishing: keep merging commits with non-release types (`chore:`, `docs:`, `test:`, `ci:`, `build:`, `refactor:`, `style:`). The Release PR won't appear or won't update until a `feat:` or `fix:` lands.
+
+To force a specific version, edit the Release PR's `package.json` and `CHANGELOG.md` before merging — release-please respects your edits.
+
+To roll back: the published `0.x.y` cannot be removed from npm (only deprecated). Use `npm deprecate @ebratz/dynamodb-better-auth@0.x.y "reason"` and publish a fixed `0.x.(y+1)`.
 
 ---
 
