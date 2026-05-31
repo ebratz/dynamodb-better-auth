@@ -29,6 +29,13 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
+          # Use a PAT (falling back to GITHUB_TOKEN) so the Release PR is
+          # opened under a user identity rather than the GitHub Actions bot.
+          # PRs opened with GITHUB_TOKEN do NOT trigger `pull_request`
+          # workflows (anti-recursion guard), which leaves required checks
+          # stuck in "Expected — Waiting for status to be reported".
+          # See: https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
