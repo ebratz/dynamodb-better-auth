@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.0...v0.1.1) (2026-05-31)
+
+
+### Bug Fixes
+
+* **ci:** add overrides to resolve @better-auth/test-utils peer-dep conflict ([84fc4f0](https://github.com/ebratz/dynamodb-better-auth/commit/84fc4f020bc127aef4d5ae305d6d3218ed07b7fb))
+* **ci:** delete lockfile before install to bypass npm bug [#4828](https://github.com/ebratz/dynamodb-better-auth/issues/4828) ([b051490](https://github.com/ebratz/dynamodb-better-auth/commit/b0514901d8614a9f9141b0b8b4dd7a4c9074c2e9))
+* **ci:** use npm install instead of npm ci to work around rollup platform deps ([6210f38](https://github.com/ebratz/dynamodb-better-auth/commit/6210f387a3894ba611685af6c4506dd3148ce577))
+
 ## [Unreleased]
 
 ## [0.1.0] - 2026-05-30
