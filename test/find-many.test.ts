@@ -270,4 +270,26 @@ describe("findMany", () => {
     // Result: (A AND B) AND (C) — contains AND (from grouping), C is wrapped standalone
     expect(scanCmd.FilterExpression).toContain("AND");
   });
+
+  // Regression for issue #3 — DynamoDB rejects requests that carry
+  // ExpressionAttributeNames/Values when no expression in the request
+  // references the placeholders. better-auth's get-session calls findMany
+  // with an empty where, which lands in the Tier-3 Scan path. The Scan
+  // must NOT send the two attribute maps.
+  it("Tier 3 Scan with empty where: omits ExpressionAttributeNames/Values entirely", async () => {
+    const docClient = makeDocClient([
+      { Items: [{ id: "u1" }, { id: "u2" }] },
+    ]);
+    const findMany = findManyMethod(docClient, makeConfig());
+
+    await findMany({ model: "user", where: [] });
+
+    const calls = docClient._calls();
+    const scanCmd = calls.find((c: any) => c._type === "ScanCommand");
+    expect(scanCmd).toBeDefined();
+    expect(scanCmd.FilterExpression).toBeUndefined();
+    // Must be absent from the SDK input — not just an empty {}.
+    expect(scanCmd.ExpressionAttributeNames).toBeUndefined();
+    expect(scanCmd.ExpressionAttributeValues).toBeUndefined();
+  });
 });

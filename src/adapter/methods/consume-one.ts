@@ -17,6 +17,7 @@ import { DeleteCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
+import { compactExpr } from "../../helpers/expression-names";
 import { getTableName } from "../client";
 import { InvalidWhereError } from "../../errors";
 
@@ -196,8 +197,7 @@ async function _queryForKey(
       TableName: tableName,
       IndexName: plan.indexName!,
       KeyConditionExpression: plan.keyCondition!,
-      ExpressionAttributeNames: plan.expressionAttributeNames,
-      ExpressionAttributeValues: plan.expressionAttributeValues,
+      ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
       Limit: 1,
     } as any),
   );

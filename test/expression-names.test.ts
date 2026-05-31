@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildExpressionNames } from "../src/helpers/expression-names";
+import { buildExpressionNames, compactExpr } from "../src/helpers/expression-names";
 
 describe("buildExpressionNames", () => {
   it("builds names map for given fields", () => {
@@ -100,5 +100,28 @@ describe("buildExpressionNames", () => {
     expect(result.names["#n1"]).toBe("b");
     expect(result.names["#n2"]).toBe("c");
     expect(result.names["#n3"]).toBe("d");
+  });
+});
+
+describe("compactExpr", () => {
+  it("omits both fields when maps are empty", () => {
+    expect(compactExpr({}, {})).toEqual({});
+  });
+
+  it("omits both fields when maps are undefined", () => {
+    expect(compactExpr(undefined, undefined)).toEqual({});
+  });
+
+  it("includes non-empty names map only", () => {
+    expect(compactExpr({ "#n0": "id" }, {})).toEqual({
+      ExpressionAttributeNames: { "#n0": "id" },
+    });
+  });
+
+  it("includes both when both have entries", () => {
+    expect(compactExpr({ "#n0": "id" }, { ":v0": "abc" })).toEqual({
+      ExpressionAttributeNames: { "#n0": "id" },
+      ExpressionAttributeValues: { ":v0": "abc" },
+    });
   });
 });

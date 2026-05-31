@@ -21,6 +21,7 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
+import { compactExpr } from "../../helpers/expression-names";
 import { UnsupportedOptionError } from "../../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,8 +68,7 @@ export function findManyMethod(
             IndexName: plan.indexName!,
             KeyConditionExpression: plan.keyCondition!,
             FilterExpression: plan.filterExpression || undefined,
-            ExpressionAttributeNames: plan.expressionAttributeNames,
-            ExpressionAttributeValues: plan.expressionAttributeValues,
+            ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
             Limit: limit + (args.offset ?? 0),
             ScanIndexForward: args.sortBy?.direction !== "desc",
             ExclusiveStartKey: lastEvaluatedKey,
@@ -126,8 +126,7 @@ export function findManyMethod(
           new ScanCommand({
             TableName: tableName,
             FilterExpression: plan.filterExpression || undefined,
-            ExpressionAttributeNames: plan.expressionAttributeNames,
-            ExpressionAttributeValues: plan.expressionAttributeValues,
+            ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
             ExclusiveStartKey: lastEvaluatedKey,
           } as any)
         );
@@ -168,8 +167,7 @@ export function findManyMethod(
         new ScanCommand({
           TableName: tableName,
           FilterExpression: plan.filterExpression || undefined,
-          ExpressionAttributeNames: plan.expressionAttributeNames,
-          ExpressionAttributeValues: plan.expressionAttributeValues,
+          ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
           Limit: scanLimit,
           ExclusiveStartKey: lastEvaluatedKey,
         } as any)

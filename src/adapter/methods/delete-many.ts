@@ -22,6 +22,7 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
+import { compactExpr } from "../../helpers/expression-names";
 import { getTableName } from "../client";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -219,8 +220,7 @@ async function _findItems(
           IndexName: plan.indexName!,
           KeyConditionExpression: plan.keyCondition!,
           FilterExpression: plan.filterExpression || undefined,
-          ExpressionAttributeNames: plan.expressionAttributeNames,
-          ExpressionAttributeValues: plan.expressionAttributeValues,
+          ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
           ExclusiveStartKey: lastEvaluatedKey,
         } as any),
       );
@@ -269,8 +269,7 @@ async function _findItems(
       new ScanCommand({
         TableName: tableName,
         FilterExpression: plan.filterExpression || undefined,
-        ExpressionAttributeNames: plan.expressionAttributeNames,
-        ExpressionAttributeValues: plan.expressionAttributeValues,
+        ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
         ExclusiveStartKey: lastEvaluatedKey,
       } as any),
     );

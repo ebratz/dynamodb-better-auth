@@ -18,7 +18,7 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema, buildKeyFromWhere } from "../../helpers/key-builder";
-import { buildExpressionNames } from "../../helpers/expression-names";
+import { buildExpressionNames, compactExpr } from "../../helpers/expression-names";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -216,8 +216,7 @@ async function _findOneItem(
         IndexName: plan.indexName!,
         KeyConditionExpression: plan.keyCondition!,
         FilterExpression: plan.filterExpression || undefined,
-        ExpressionAttributeNames: plan.expressionAttributeNames,
-        ExpressionAttributeValues: plan.expressionAttributeValues,
+        ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
         Limit: 1,
       } as any),
     );
@@ -256,8 +255,7 @@ async function _findOneItem(
     new ScanCommand({
       TableName: tableName,
       FilterExpression: plan.filterExpression || undefined,
-      ExpressionAttributeNames: plan.expressionAttributeNames,
-      ExpressionAttributeValues: plan.expressionAttributeValues,
+      ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
       Limit: 1,
     } as any),
   );

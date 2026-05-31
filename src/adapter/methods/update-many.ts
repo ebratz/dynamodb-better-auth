@@ -22,7 +22,7 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { buildExpressionNames } from "../../helpers/expression-names";
+import { buildExpressionNames, compactExpr } from "../../helpers/expression-names";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -234,8 +234,7 @@ async function _queryAll(
         IndexName: plan.indexName!,
         KeyConditionExpression: plan.keyCondition!,
         FilterExpression: plan.filterExpression || undefined,
-        ExpressionAttributeNames: plan.expressionAttributeNames,
-        ExpressionAttributeValues: plan.expressionAttributeValues,
+        ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
         ExclusiveStartKey: lastKey,
       } as any),
     );

@@ -53,3 +53,30 @@ export function buildExpressionNames(fields: string[]): ExpressionNamesResult {
     nextValueIndex: valueCounter,
   };
 }
+
+/**
+ * DynamoDB rejects requests that carry `ExpressionAttributeNames` or
+ * `ExpressionAttributeValues` when no expression in the same request
+ * actually references the placeholders. The query planner emits empty
+ * `{}` maps for queries with no filter/key-condition; passing those
+ * straight through trips `ValidationException: ExpressionAttributeNames
+ * can only be specified when using expressions`.
+ *
+ * This helper returns the two fields only when their maps are non-empty,
+ * so call sites can spread the result into the SDK command object.
+ */
+export function compactExpr(
+  names: Record<string, string> | undefined,
+  values: Record<string, unknown> | undefined,
+): {
+  ExpressionAttributeNames?: Record<string, string>;
+  ExpressionAttributeValues?: Record<string, unknown>;
+} {
+  const out: {
+    ExpressionAttributeNames?: Record<string, string>;
+    ExpressionAttributeValues?: Record<string, unknown>;
+  } = {};
+  if (names && Object.keys(names).length > 0) out.ExpressionAttributeNames = names;
+  if (values && Object.keys(values).length > 0) out.ExpressionAttributeValues = values;
+  return out;
+}
