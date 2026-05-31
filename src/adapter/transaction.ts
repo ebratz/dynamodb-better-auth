@@ -29,12 +29,48 @@ import { resolveDocClient } from "./client";
 type Where = any;
 
 /**
+ * Helpers exposed by better-auth's `createAdapterFactory` to the
+ * `adapter` callback. We need `transformInput`/`transformOutput`/
+ * `getDefaultModelName` here so that writes buffered inside a
+ * transaction get the same id-generation, default-value, and
+ * field-name mapping treatment the framework applies on the
+ * non-transactional path.
+ */
+export interface TransactionFactoryHelpers {
+  transformInput: (
+    data: Record<string, unknown>,
+    defaultModelName: string,
+    action: "create" | "update",
+    forceAllowId?: boolean,
+  ) => Promise<Record<string, unknown>>;
+  transformOutput: (
+    data: Record<string, unknown>,
+    defaultModelName: string,
+    select?: string[],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    join?: any,
+  ) => Promise<Record<string, unknown>>;
+  getDefaultModelName: (model: string) => string;
+}
+
+/**
+ * Late-bound holder for factory helpers. `createTransactionWrapper`
+ * is constructed before the framework invokes the `adapter` callback,
+ * so we hand it a ref that the factory populates synchronously inside
+ * that callback. By the time any transaction runs, `current` is set.
+ */
+export interface TransactionHelpersRef {
+  current: TransactionFactoryHelpers | null;
+}
+
+/**
  * Creates a transaction wrapper that buffers writes and flushes
  * atomically via TransactWriteItems.
  *
  * @param nativeAdapter — the adapter methods object (findOne, findMany, count)
  * @param config — adapter config
  * @param getTable — resolve a table name from model name
+ * @param helpersRef — late-bound factory helpers (transformInput, ...)
  */
 export function createTransactionWrapper(
   nativeAdapter: {
@@ -45,7 +81,20 @@ export function createTransactionWrapper(
   },
   config: DynamoDBAdapterConfig,
   getTable: (model: string) => string,
+  helpersRef?: TransactionHelpersRef,
 ): (cb: (txAdapter: any) => Promise<unknown>) => Promise<unknown> {
+  // Identity fallback: when the wrapper is constructed outside the factory
+  // (e.g. low-level unit tests), no framework helpers are available. We
+  // pass data through unchanged so the buffered Put/Update mirrors the
+  // exact bytes the caller supplied — preserving the original primitive
+  // contract this module had before transformInput integration.
+  const identityHelpers: TransactionFactoryHelpers = {
+    transformInput: async (data) => data,
+    transformOutput: async (data) => data,
+    getDefaultModelName: (model) => model,
+  };
+  const requireHelpers = (): TransactionFactoryHelpers =>
+    helpersRef?.current ?? identityHelpers;
   return async (cb: (txAdapter: any) => Promise<unknown>): Promise<unknown> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const writeBuffer: any[] = [];
@@ -60,17 +109,33 @@ export function createTransactionWrapper(
       count: nativeAdapter.count,
 
       // ── create ───────────────────────────────────────────
-      create: async (args: { model: string; data: Record<string, any>; select?: string[] }) => {
-        const { model, data } = args;
+      create: async (args: {
+        model: string;
+        data: Record<string, any>;
+        select?: string[];
+        forceAllowId?: boolean;
+      }) => {
+        const { model, data: unsafeData, select, forceAllowId } = args;
+        const helpers = requireHelpers();
+        const defaultModelName = helpers.getDefaultModelName(model);
+
+        // Mirror the framework's non-transactional `create` path: run
+        // input through `transformInput` so the adapter sees the same
+        // shape it would outside a transaction (id generated, defaults
+        // applied, fieldName mapping, Date → ISO via customTransformInput).
+        // better-auth's `createWithHooks` always passes forceAllowId: true,
+        // so the framework only respects a caller-supplied id when one
+        // is present.
+        const item = (await helpers.transformInput(
+          unsafeData,
+          defaultModelName,
+          "create",
+          forceAllowId ?? true,
+        )) as Record<string, any>;
+
         const tableName = getTable(model);
         const schema = getKeySchema(model, config);
         const pkField = schema.pkField;
-
-        // Convert Date → ISO for DocumentClient marshalling
-        const item: Record<string, any> = {};
-        for (const [k, v] of Object.entries(data)) {
-          item[k] = v instanceof Date ? v.toISOString() : v;
-        }
 
         // Block >100 actions
         if (writeBuffer.length >= 100) {
@@ -81,9 +146,9 @@ export function createTransactionWrapper(
         }
 
         // If enableEmailUniqueness and model is "user", buffer email-lookup too
-        if (config.enableEmailUniqueness && model === "user" && data.email) {
+        if (config.enableEmailUniqueness && model === "user" && item.email) {
           hasEmailUniqueness = true;
-          const emailLower = (data.email as string).toLowerCase();
+          const emailLower = (item.email as string).toLowerCase();
 
           // User put
           writeBuffer.push({
@@ -108,7 +173,7 @@ export function createTransactionWrapper(
               TableName: emailTable,
               Item: {
                 email: emailLower,
-                userId: data.id,
+                userId: item.id,
               },
               ConditionExpression: "attribute_not_exists(#pk)",
               ExpressionAttributeNames: { "#pk": "email" },
@@ -125,7 +190,7 @@ export function createTransactionWrapper(
           });
         }
 
-        return data;
+        return helpers.transformOutput(item, defaultModelName, select);
       },
 
       // ── update ───────────────────────────────────────────
@@ -134,7 +199,19 @@ export function createTransactionWrapper(
         where: Where[];
         update: Record<string, any>;
       }) => {
-        const { model, where, update } = args;
+        const { model, where, update: unsafeUpdate } = args;
+        const helpers = requireHelpers();
+        const defaultModelName = helpers.getDefaultModelName(model);
+
+        // Run the patch through transformInput so onUpdate fields
+        // (e.g. `updatedAt`), field-name mapping, and Date → ISO
+        // conversion happen exactly like the non-tx update path.
+        const update = (await helpers.transformInput(
+          unsafeUpdate,
+          defaultModelName,
+          "update",
+        )) as Record<string, any>;
+
         const tableName = getTable(model);
         const schema = getKeySchema(model, config);
 
@@ -263,7 +340,15 @@ export function createTransactionWrapper(
         where: Where[];
         update: Record<string, any>;
       }) => {
-        const { model, where, update } = args;
+        const { model, where, update: unsafeUpdate } = args;
+        const helpers = requireHelpers();
+        const defaultModelName = helpers.getDefaultModelName(model);
+        const update = (await helpers.transformInput(
+          unsafeUpdate,
+          defaultModelName,
+          "update",
+        )) as Record<string, any>;
+
         const tableName = getTable(model);
         const schema = getKeySchema(model, config);
 

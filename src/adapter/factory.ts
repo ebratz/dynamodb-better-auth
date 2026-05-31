@@ -17,7 +17,10 @@ import { updateManyMethod } from "./methods/update-many";
 import { deleteMethod } from "./methods/delete";
 import { deleteManyMethod } from "./methods/delete-many";
 import { consumeOneMethod } from "./methods/consume-one";
-import { createTransactionWrapper } from "./transaction";
+import {
+  createTransactionWrapper,
+  type TransactionHelpersRef,
+} from "./transaction";
 
 // Re-exports
 export { resolveDocClient, getTableName };
@@ -60,6 +63,12 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
     consumeOne:  consumeOneMethod(docClient, forgivingConfig),
   };
 
+  // Late-bound holder for the framework's transformInput/transformOutput.
+  // createAdapterFactory invokes our `adapter` callback (below) with these
+  // helpers; the transaction wrapper resolves them lazily so buffered writes
+  // get the same id/default/onUpdate treatment as the non-tx path.
+  const helpersRef: TransactionHelpersRef = { current: null };
+
   return createAdapterFactory({
     config: {
       adapterId: "dynamodb-adapter",
@@ -92,12 +101,25 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
 
       // Transaction support (hybrid buffer pattern per DESIGN.md §6)
       transaction: (forgivingConfig.client
-        ? createTransactionWrapper(nativeMethods, forgivingConfig, (model: string) =>
-            getTableName(model, forgivingConfig)
+        ? createTransactionWrapper(
+            nativeMethods,
+            forgivingConfig,
+            (model: string) => getTableName(model, forgivingConfig),
+            helpersRef,
           )
         : false) as any,
     },
 
-    adapter: () => nativeMethods as any,
+    adapter: (helpers: any = {}) => {
+      const { transformInput, transformOutput, getDefaultModelName } = helpers;
+      if (transformInput && transformOutput && getDefaultModelName) {
+        helpersRef.current = {
+          transformInput,
+          transformOutput,
+          getDefaultModelName,
+        };
+      }
+      return nativeMethods as any;
+    },
   });
 }
