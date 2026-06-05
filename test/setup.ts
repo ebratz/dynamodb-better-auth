@@ -121,14 +121,14 @@ export async function setupTables() {
     BillingMode: "PAY_PER_REQUEST",
   });
 
-  // Organization (plugin model test)
+  // Organization (plugin model test) — custom PK field "orgId"
   await createTable({
     TableName: "test-organizations",
     AttributeDefinitions: [
-      { AttributeName: "id", AttributeType: "S" },
+      { AttributeName: "orgId", AttributeType: "S" },
       { AttributeName: "slug", AttributeType: "S" },
     ],
-    KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    KeySchema: [{ AttributeName: "orgId", KeyType: "HASH" }],
     GlobalSecondaryIndexes: [{
       IndexName: "slug-index",
       KeySchema: [{ AttributeName: "slug", KeyType: "HASH" }],

@@ -23,6 +23,7 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../types";
 import { generateToken } from "../helpers/uuid";
+import { runTransactionMiddleware } from "../helpers/apply-middleware";
 import { DynamoAdapterError } from "../errors";
 import { resolveDocClient } from "./client";
 
@@ -113,11 +114,16 @@ export function createTransactionWrapper(
     // ── Flush buffered writes ─────────────────────────────────
     if (writeBuffer.length > 0) {
       try {
-        await docClient.send(
-          new TransactWriteCommand({
-            TransactItems: writeBuffer,
-            ClientRequestToken: generateToken(),
-          }),
+        await runTransactionMiddleware(
+          config.extensions ?? [],
+          writeBuffer.length,
+          () =>
+            docClient.send(
+              new TransactWriteCommand({
+                TransactItems: writeBuffer,
+                ClientRequestToken: generateToken(),
+              }),
+            ),
         );
       } catch (err: any) {
         if (err.name === "TransactionCanceledException") {

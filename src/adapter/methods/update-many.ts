@@ -23,12 +23,11 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { resolveQueryPlan } from "../../helpers/query-planner";
-import { resolveKEYS_ONLY } from "../../helpers/batch-get";
-import { fetchAllByPlan } from "../../helpers/fetch-all";
+import { findAllItems } from "../../helpers/find-items";
 import { buildUpdateExpression } from "../../helpers/update-item";
 import { shouldLog } from "../../helpers/debug-log";
 import { getTableName } from "../client";
+import { DynamoAdapterError } from "../../errors";
 
 export function updateManyMethod(
   docClient: DynamoDBDocumentClient,
@@ -52,10 +51,20 @@ export function updateManyMethod(
 
     if (Object.keys(updateData).length === 0) return 0;
 
-    // ── Find matching items ────────────────────────────────────
-    const items = await _findItems(docClient, tableName, where, model, schema, config);
+    // ── Find matching items via shared helper ──────────────────
+    const items = await findAllItems(docClient, tableName, where, model, schema, config, { debugKey: "updateMany" });
 
     if (items.length === 0) return 0;
+
+    // ── Safety limit ──────────────────────────────────────────
+    const maxItems = config.maxUpdateManyItems ?? 1000;
+    if (maxItems > 0 && items.length > maxItems) {
+      throw new DynamoAdapterError(
+        "TOO_MANY_ITEMS",
+        `updateMany matched ${items.length} items but the safety limit is ${maxItems}. ` +
+          `Refine your where clause or increase maxUpdateManyItems in config.`,
+      );
+    }
 
     // ── unsafeBatchUpdate path ─────────────────────────────────
     if (config.unsafeBatchUpdate) {
@@ -80,61 +89,6 @@ export function updateManyMethod(
 
     return results.filter(Boolean).length;
   };
-}
-
-// ── Item lookup ─────────────────────────────────────────────────
-
-/**
- * Finds all items matching the where clause via centralized resolveQueryPlan.
- * Tier 2: GSI Query with pagination.
- * Tier 3: Scan with FilterExpression.
- * KEYS_ONLY GSI follow-up via resolveKEYS_ONLY (BatchGetCommand, chunked).
- */
-async function _findItems(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  where: WhereClause[],
-  model: string,
-  schema: { pkField: string; skField?: string },
-  config: DynamoDBAdapterConfig,
-): Promise<Record<string, any>[]> {
-  // No where clause → full table Scan
-  if (!where || where.length === 0) {
-    return fetchAllByPlan(docClient, tableName, {
-      operation: "scan",
-      expressionAttributeNames: {},
-      expressionAttributeValues: {},
-    });
-  }
-
-  const plan = resolveQueryPlan(where, model, config);
-
-  // ── Tier 2: GSI Query ────────────────────────────────────
-  if (plan.tier === 2 && plan.operation === "query") {
-    const items = await fetchAllByPlan(docClient, tableName, plan as any);
-
-    // KEYS_ONLY follow-up
-    if (plan.needsFollowUpGetItem && plan.followUpKeyFields && items.length > 0) {
-      return resolveKEYS_ONLY(
-        docClient,
-        tableName,
-        plan.followUpKeyFields,
-        items,
-      );
-    }
-
-    return items;
-  }
-
-  // ── Tier 3: Scan ─────────────────────────────────────────
-  if (shouldLog(config, "updateMany")) {
-    console.warn(
-      `[dynamodb-adapter] updateMany on ${model} using Scan (Tier 3). ` +
-        `Consider adding a GSI for the queried field(s).`,
-    );
-  }
-
-  return fetchAllByPlan(docClient, tableName, plan as any);
 }
 
 // ── Item update ─────────────────────────────────────────────────
@@ -228,7 +182,8 @@ async function _batchPutUpdate(
     let retries = 0;
     let unprocessed = result.UnprocessedItems;
     while (unprocessed && Object.keys(unprocessed).length > 0 && retries < 3) {
-      await new Promise((r) => setTimeout(r, Math.pow(2, retries) * 100));
+      // Exponential backoff with jitter: 100ms / 200ms / 400ms + random 0-50ms
+      await new Promise((r) => setTimeout(r, Math.pow(2, retries) * 100 + Math.random() * 50));
       const retryResult = await docClient.send(
         new BatchWriteCommand({
           RequestItems: unprocessed,

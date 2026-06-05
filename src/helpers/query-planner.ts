@@ -1,18 +1,23 @@
 /**
  * Analyses a Better Auth where clause and determines the DynamoDB access pattern.
  *
+ * Strategy chain: tryTier1 → tryTier2 → fallbackTier3.
+ * Each tier is a standalone function returning a QueryPlan or null.
+ * Adding Tier 4 requires adding one function + one `??` call.
+ *
  * Tier 1: PK equality (simple or composite) → GetItem
  * Tier 2: Matches a declared GSI key → Query
- * Tier 3: No index match → Scan + FilterExpression
+ * Tier 3: Scan + FilterExpression (always succeeds)
  *
  * Sets needsFollowUpGetItem for KEYS_ONLY GSIs (e.g., account by-id).
  *
  * Per DESIGN.md §3.
  */
 
-import type { DynamoDBAdapterConfig, QueryPlan } from "../types";
+import type { DynamoDBAdapterConfig, QueryPlan, KeySchema } from "../types";
 import { getKeySchema } from "./key-builder";
 import { convertWhereClause } from "./where-converter";
+import { mergeKeyAndFilterExpressions } from "./merge-expressions";
 import { DynamoAdapterError } from "../errors";
 
 // ── Where clause shape ─────────────────────────────────────────
@@ -25,13 +30,17 @@ interface WhereEntry {
   mode?: "sensitive" | "insensitive";
 }
 
+// ── GSI declaration shape (from types) ────────────────────────
+
+interface GsiInfo {
+  indexName: string;
+  hashKey: string;
+  rangeKey?: string;
+  projection?: "ALL" | "KEYS_ONLY" | { include: string[] };
+}
+
 // ── Resolvers ──────────────────────────────────────────────────
 
-/**
- * Simple identity resolver — where-converter handles field name
- * transformation internally, so the planner uses raw field names
- * for Key construction and GSI matching.
- */
 export function identityGetFieldName({ field }: { model: string; field: string }): string {
   return field;
 }
@@ -41,13 +50,6 @@ export function identityGetFieldAttributes(): any {
 
 // ── Public API ──────────────────────────────────────────────────
 
-/**
- * Build a plain FilterExpression (and associated names/values) from a
- * where clause — useful for count, updateMany _findItems, deleteMany
- * _findItems, and any Scan path that just needs a filter.
- *
- * Delegates to convertWhereClause with identity field resolvers.
- */
 export function resolveFilter(
   where: WhereEntry[],
   model: string,
@@ -71,6 +73,10 @@ export function resolveFilter(
   };
 }
 
+/**
+ * Strategy chain: try Tier 1, then Tier 2, then fallback to Tier 3.
+ * Each tier returns a complete QueryPlan or null (Tier 3 always succeeds).
+ */
 export function resolveQueryPlan(
   where: WhereEntry[],
   model: string,
@@ -87,43 +93,47 @@ export function resolveQueryPlan(
   const schema = getKeySchema(model, config);
   const indexes = config.indexes?.[model] ?? {};
 
-  // ── Tier 1: PK equality check ────────────────────────────────
+  return (
+    tryTier1(where, schema, tableName) ??
+    tryTier2(where, indexes, schema, tableName, model) ??
+    fallbackTier3(where, tableName, model)
+  );
+}
+
+// ── Tier 1: GetItem ────────────────────────────────────────────
+
+/**
+ * Attempts a direct GetItem when the primary key is fully known.
+ *
+ * Returns a plan if the PK field (and optional SK for composite keys)
+ * is present with an eq operator. Extra where clauses beyond the key
+ * are flagged for client-side filtering since GetItem has no FilterExpression.
+ */
+function tryTier1(
+  where: WhereEntry[],
+  schema: KeySchema,
+  tableName: string,
+): QueryPlan | null {
   const pkEq = findEqClause(where, schema.pkField);
-  if (pkEq !== undefined) {
-    // PK is resolvable. Build the key from PK (+ optional SK).
-    const key: Record<string, any> = { [schema.pkField]: pkEq };
-    const usedFields = new Set([schema.pkField]);
+  if (pkEq === undefined) return null;
 
-    if (schema.skField) {
-      const skEq = findEqClause(where, schema.skField);
-      if (skEq !== undefined) {
-        key[schema.skField] = skEq;
-        usedFields.add(schema.skField);
-      }
-      // SK is optional — if not present, key is still valid.
+  const key: Record<string, any> = { [schema.pkField]: pkEq };
+  const usedFields = new Set([schema.pkField]);
+
+  if (schema.skField) {
+    const skEq = findEqClause(where, schema.skField);
+    if (skEq !== undefined) {
+      key[schema.skField] = skEq;
+      usedFields.add(schema.skField);
     }
+    // SK is optional — if not present, key is still valid.
+  }
 
-    // Extra clauses beyond the key must be filtered client-side
-    // because GetItem has no FilterExpression.
-    const extraClauses = where.filter((w) => !usedFields.has(w.field));
+  // Extra clauses beyond the key must be filtered client-side
+  // because GetItem has no FilterExpression.
+  const extraClauses = where.filter((w) => !usedFields.has(w.field));
 
-    if (extraClauses.length > 0) {
-      return {
-        tier: 1,
-        operation: "getItem",
-        tableName,
-        key,
-        expressionAttributeNames: {},
-        expressionAttributeValues: {},
-        needsClientSideFilter: true,
-        clientSideFilters: extraClauses.map((w) => ({
-          field: w.field,
-          operator: w.operator ?? "eq",
-          value: w.value,
-        })),
-      };
-    }
-
+  if (extraClauses.length > 0) {
     return {
       tier: 1,
       operation: "getItem",
@@ -131,11 +141,43 @@ export function resolveQueryPlan(
       key,
       expressionAttributeNames: {},
       expressionAttributeValues: {},
+      needsClientSideFilter: true,
+      clientSideFilters: extraClauses.map((w) => ({
+        field: w.field,
+        operator: w.operator ?? "eq",
+        value: w.value,
+      })),
     };
   }
 
-  // ── Tier 2: GSI match ────────────────────────────────────────
-  for (const [fieldName, gsi] of Object.entries(indexes)) {
+  return {
+    tier: 1,
+    operation: "getItem",
+    tableName,
+    key,
+    expressionAttributeNames: {},
+    expressionAttributeValues: {},
+  };
+}
+
+// ── Tier 2: GSI Query ──────────────────────────────────────────
+
+/**
+ * Attempts a GSI Query when a where clause matches a declared GSI.
+ *
+ * Scans the configured indexes for a hash-key eq match. If the GSI has a
+ * range key and the where clause includes a sort-key-operator clause on it,
+ * that clause goes into KeyConditionExpression; all other clauses become
+ * FilterExpression. KEYS_ONLY projections trigger a followUpGetItem flag.
+ */
+function tryTier2(
+  where: WhereEntry[],
+  indexes: Record<string, GsiInfo>,
+  schema: KeySchema,
+  tableName: string,
+  model: string,
+): QueryPlan | null {
+  for (const [, gsi] of Object.entries(indexes)) {
     const hashEq = findEqClause(where, gsi.hashKey);
     if (hashEq === undefined) continue;
 
@@ -167,32 +209,15 @@ export function resolveQueryPlan(
       }
     }
 
-    // Build KeyConditionExpression and FilterExpression with a shared
-    // namespace to avoid #nX placeholder collisions when merging.
-    const allClauses = [...keyConditionClauses, ...filterClauses];
-    const combined = convertWhereClause(allClauses, {
-      model,
-      getFieldName: identityGetFieldName,
-      getFieldAttributes: identityGetFieldAttributes,
-    });
-
-    // The combined expression includes both key conditions and filters —
-    // we need to split them back out. Extract the key condition portion
-    // by building it separately from the shared namespace.
+    // Build KeyConditionExpression and FilterExpression with collision-free
+    // namespacing. The key condition and filter share the same #nX / :vN
+    // namespace — DynamoDB ignores unused entries, but we remap collisions.
     const kcOnly = convertWhereClause(keyConditionClauses, {
       model,
       getFieldName: identityGetFieldName,
       getFieldAttributes: identityGetFieldAttributes,
     });
 
-    // Filter expression is the rest (combined minus key condition).
-    // Since DynamoDB evaluates them separately, we pass the combined
-    // names/values and use a manually split expression.
-    // Simplest correct approach: use kcOnly for keyCondition,
-    // and rebuild filter with a fresh call that starts after kcOnly's indices.
-    //
-    // But the simplest correct approach is: use combined names/values
-    // for both expressions. DynamoDB ignores unused entries.
     let filterExpr = "";
     if (filterClauses.length > 0) {
       const fResult = convertWhereClause(filterClauses, {
@@ -200,30 +225,10 @@ export function resolveQueryPlan(
         getFieldName: identityGetFieldName,
         getFieldAttributes: identityGetFieldAttributes,
       });
-      filterExpr = fResult.expression;
-      // Merge names/values: start with kc names, then add filter names
-      // avoiding key collisions.
-      let offset = Object.keys(kcOnly.expressionAttributeNames).length;
-      const mergedNames = { ...kcOnly.expressionAttributeNames };
-      const mergedValues = { ...kcOnly.expressionAttributeValues };
-      for (const [key, field] of Object.entries(fResult.expressionAttributeNames)) {
-        if (mergedNames[key] !== undefined && mergedNames[key] !== field) {
-          // Collision — remap to a fresh #nX slot.
-          const newKey = `#n${offset++}`;
-          mergedNames[newKey] = field;
-          // Replace old key references in the filter expression.
-          const escapedKey = key.replace(/#/g, "\\#");
-          filterExpr = filterExpr.replace(new RegExp(escapedKey, "g"), newKey);
-        } else if (mergedNames[key] === undefined) {
-          mergedNames[key] = field;
-        }
-        // If same field mapped to same key, no action needed.
-      }
-      Object.assign(mergedValues, fResult.expressionAttributeValues);
-
-      // Use the merged map for the final plan.
-      kcOnly.expressionAttributeNames = mergedNames;
-      kcOnly.expressionAttributeValues = mergedValues;
+      const merged = mergeKeyAndFilterExpressions(kcOnly, fResult);
+      filterExpr = merged.filterExpression;
+      kcOnly.expressionAttributeNames = merged.names;
+      kcOnly.expressionAttributeValues = merged.values;
     }
 
     const isKeysOnly = gsi.projection === "KEYS_ONLY";
@@ -249,7 +254,20 @@ export function resolveQueryPlan(
     };
   }
 
-  // ── Tier 3: Scan fallback ────────────────────────────────────
+  return null;
+}
+
+// ── Tier 3: Scan (always succeeds) ─────────────────────────────
+
+/**
+ * Fallback: full-table Scan with FilterExpression.
+ * Always succeeds — if no where clauses, returns a scan-everything plan.
+ */
+function fallbackTier3(
+  where: WhereEntry[],
+  tableName: string,
+  model: string,
+): QueryPlan {
   const scanResult = convertWhereClause(where, {
     model,
     getFieldName: identityGetFieldName,
@@ -269,10 +287,6 @@ export function resolveQueryPlan(
 
 // ── Internal helpers ────────────────────────────────────────────
 
-/**
- * Finds an eq clause for a given field and returns its value, or undefined.
- * An omitted operator defaults to eq.
- */
 function findEqClause(
   where: WhereEntry[],
   field: string,
@@ -286,10 +300,6 @@ function findEqClause(
   return undefined;
 }
 
-/**
- * Operators that can be used in a KeyConditionExpression on a sort key.
- * DynanoDB docs: =, <, <=, >, >=, BETWEEN, begins_with
- */
 const SORT_KEY_OPERATORS = new Set([
   "eq", "lt", "lte", "gt", "gte", "starts_with", "between",
 ]);

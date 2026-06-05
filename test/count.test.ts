@@ -5,6 +5,7 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 // Mock the AWS SDK so command input props are spread onto the object
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
+  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
 }));
 
 function makeDocClient(responses: any[]) {
@@ -213,5 +214,106 @@ describe("count", () => {
     const [cmd] = docClient._capture();
     expect(cmd.FilterExpression).toContain("AND");
     expect(cmd.FilterExpression).toContain("OR");
+  });
+
+  // ── GSI-optimised count ───────────────────────────────────
+
+  it("uses QueryCommand on GSI when where[eq] matches hash key", async () => {
+    const docClient = makeDocClient([{ Count: 7, ScannedCount: 7 }]);
+    const config = makeConfig({
+      indexes: {
+        user: { email: { indexName: "email-index", hashKey: "email" } },
+      },
+    });
+    const count = countMethod(docClient, config);
+
+    await count({
+      model: "user",
+      where: [{ field: "email", operator: "eq", value: "a@b.com" }],
+    });
+
+    const [cmd] = docClient._capture();
+    expect(cmd._type).toBe("QueryCommand");
+    expect(cmd.IndexName).toBe("email-index");
+    expect(cmd.Select).toBe("COUNT");
+    expect(cmd.KeyConditionExpression).toContain("#hk = :hv");
+  });
+
+  it("uses QueryCommand on GSI with extra where clauses as FilterExpression", async () => {
+    const docClient = makeDocClient([{ Count: 2, ScannedCount: 2 }]);
+    const config = makeConfig({
+      indexes: {
+        user: { email: { indexName: "email-index", hashKey: "email" } },
+      },
+    });
+    const count = countMethod(docClient, config);
+
+    await count({
+      model: "user",
+      where: [
+        { field: "email", operator: "eq", value: "a@b.com" },
+        { field: "status", operator: "eq", value: "active" },
+      ],
+    });
+
+    const [cmd] = docClient._capture();
+    expect(cmd._type).toBe("QueryCommand");
+    expect(cmd.IndexName).toBe("email-index");
+    expect(cmd.KeyConditionExpression).toContain("#hk = :hv");
+    // Extra where clause becomes FilterExpression
+    expect(cmd.FilterExpression).toBeDefined();
+  });
+
+  it("falls back to ScanCommand when no GSI hash key matches", async () => {
+    const docClient = makeDocClient([{ Count: 5, ScannedCount: 5 }]);
+    const config = makeConfig({
+      indexes: {
+        user: { email: { indexName: "email-index", hashKey: "email" } },
+      },
+    });
+    const count = countMethod(docClient, config);
+
+    // "name" is not a GSI hash key → falls back to Scan
+    await count({
+      model: "user",
+      where: [{ field: "name", operator: "eq", value: "Alice" }],
+    });
+
+    const [cmd] = docClient._capture();
+    expect(cmd._type).toBe("ScanCommand");
+  });
+
+  it("falls back to ScanCommand when operator is not eq", async () => {
+    const docClient = makeDocClient([{ Count: 3, ScannedCount: 3 }]);
+    const config = makeConfig({
+      indexes: {
+        user: { email: { indexName: "email-index", hashKey: "email" } },
+      },
+    });
+    const count = countMethod(docClient, config);
+
+    // starts_with is not eq → no GSI optimisation
+    await count({
+      model: "user",
+      where: [{ field: "email", operator: "starts_with", value: "admin" }],
+    });
+
+    const [cmd] = docClient._capture();
+    expect(cmd._type).toBe("ScanCommand");
+  });
+
+  it("count on empty where uses ScanCommand (no GSI match)", async () => {
+    const docClient = makeDocClient([{ Count: 42, ScannedCount: 42 }]);
+    const config = makeConfig({
+      indexes: {
+        user: { email: { indexName: "email-index", hashKey: "email" } },
+      },
+    });
+    const count = countMethod(docClient, config);
+
+    await count({ model: "user" });
+
+    const [cmd] = docClient._capture();
+    expect(cmd._type).toBe("ScanCommand");
   });
 });

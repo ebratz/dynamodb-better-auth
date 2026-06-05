@@ -3,29 +3,21 @@
  *
  * Deletes all items matching the where clause.
  *
- * 1. Resolve plan via centralized query-planner:
- *    - Tier 1: GetItem (PK equality) → single-item BatchWrite.
- *    - Tier 2: GSI Query → paginated fetch → extract keys → BatchWrite.
- *      KEYS_ONLY GSIs: BatchGetCommand in chunks of 100 (not sequential GetItem).
- *    - Tier 3: Scan → paginated fetch → extract keys → BatchWrite.
- * 2. Chunk keys into batches of 25 → BatchWriteCommand with DeleteRequest entries.
+ * 1. Find all matching items via shared findAllItems helper (Tier 1/2/3).
+ * 2. Extract keys; chunk into batches of 25 → BatchWriteCommand.
  * 3. Retry UnprocessedItems with exponential backoff + jitter (max 3 attempts).
  * 4. Return total deletedCount.
  */
 
 import {
   BatchWriteCommand,
-  GetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { getTableName } from "../client";
-import { resolveQueryPlan } from "../../helpers/query-planner";
-import { resolveKEYS_ONLY } from "../../helpers/batch-get";
-import { fetchAllByPlan, type FetchAllPlan } from "../../helpers/fetch-all";
+import { findAllItems } from "../../helpers/find-items";
 import { DynamoAdapterError } from "../../errors";
-import { shouldLog } from "../../helpers/debug-log";
 
 export function deleteManyMethod(
   docClient: DynamoDBDocumentClient,
@@ -48,14 +40,24 @@ export function deleteManyMethod(
     const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
-    // ── Resolve plan via centralized planner ──────────────────
-    const plan = resolveQueryPlan(where, model, config);
-
-    // ── Find all matching items ───────────────────────────────
-    const items = await _findItems(docClient, tableName, plan, config, model, schema);
+    // ── Find all matching items via shared helper ──────────────
+    const items = await findAllItems(docClient, tableName, where, model, schema, config, {
+      debugKey: "deleteMany",
+      includeTier1: true,
+    });
 
     if (items.length === 0) {
       return 0;
+    }
+
+    // ── Safety limit ──────────────────────────────────────────
+    const maxItems = config.maxDeleteManyItems ?? 1000;
+    if (maxItems > 0 && items.length > maxItems) {
+      throw new DynamoAdapterError(
+        "TOO_MANY_ITEMS",
+        `deleteMany matched ${items.length} items but the safety limit is ${maxItems}. ` +
+          `Refine your where clause or increase maxDeleteManyItems in config.`,
+      );
     }
 
     // ── Extract keys from items ───────────────────────────────
@@ -79,67 +81,6 @@ export function deleteManyMethod(
 
     return deletedCount;
   };
-}
-
-// ── Internal helpers ───────────────────────────────────────────
-
-async function _findItems(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  plan: {
-    tier: number;
-    operation: string;
-    key?: Record<string, any>;
-    indexName?: string;
-    keyCondition?: string;
-    filterExpression?: string;
-    expressionAttributeNames: Record<string, string>;
-    expressionAttributeValues: Record<string, any>;
-    needsFollowUpGetItem?: boolean;
-    followUpKeyFields?: { pkField: string; skField?: string };
-  },
-  config: DynamoDBAdapterConfig,
-  model: string,
-  schema: { pkField: string; skField?: string },
-): Promise<Record<string, any>[]> {
-  // ── Tier 1: GetItem ──────────────────────────────────────
-  if (plan.operation === "getItem") {
-    const result = await docClient.send(
-      new GetCommand({
-        TableName: tableName,
-        Key: plan.key!,
-      }),
-    );
-    const item = result.Item as any;
-    return item ? [item] : [];
-  }
-
-  // ── Tier 2: Query on GSI ─────────────────────────────────
-  if (plan.operation === "query") {
-    const items = await fetchAllByPlan(docClient, tableName, plan as any);
-
-    // Follow-up BatchGetItem for KEYS_ONLY GSIs (chunked by 100)
-    if (plan.needsFollowUpGetItem && items.length > 0) {
-      return resolveKEYS_ONLY(
-        docClient,
-        tableName,
-        plan.followUpKeyFields ?? { pkField: schema.pkField, skField: schema.skField },
-        items,
-      );
-    }
-
-    return items;
-  }
-
-  // ── Tier 3: Scan ─────────────────────────────────────────
-  if (shouldLog(config, "deleteMany") && plan.filterExpression) {
-    console.warn(
-      `[dynamodb-adapter] deleteMany on ${model} using Scan (Tier 3). ` +
-        `Consider adding a GSI for the queried field(s).`,
-    );
-  }
-
-  return fetchAllByPlan(docClient, tableName, plan as FetchAllPlan);
 }
 
 async function _batchDeleteWithRetry(

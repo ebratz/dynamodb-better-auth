@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { deleteMethod } from "../src/adapter/methods/delete";
-import type { DynamoDBAdapterConfig } from "../src/types";
+import { makeConfig } from "./helpers";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({

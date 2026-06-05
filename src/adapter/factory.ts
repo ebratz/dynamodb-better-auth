@@ -8,6 +8,7 @@
 import { createAdapterFactory } from "better-auth/adapters";
 import type { DynamoDBAdapterConfig } from "../types";
 import { resolveDocClient, getTableName } from "./client";
+import { applyMiddleware } from "../helpers/apply-middleware";
 import { createMethod } from "./methods/create";
 import { findOneMethod } from "./methods/find-one";
 import { findManyMethod } from "./methods/find-many";
@@ -49,18 +50,19 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
   }) as DynamoDBAdapterConfig["tables"];
 
   const forgivingConfig: DynamoDBAdapterConfig = { ...config, tables };
+  const extensions = forgivingConfig.extensions ?? [];
 
   // ── Build native adapter (non-transactional) ────────────────
   const nativeMethods = {
-    create:      createMethod(docClient, forgivingConfig),
-    findOne:     findOneMethod(docClient, forgivingConfig),
-    findMany:    findManyMethod(docClient, forgivingConfig),
-    count:       countMethod(docClient, forgivingConfig),
-    update:      updateMethod(docClient, forgivingConfig),
-    updateMany:  updateManyMethod(docClient, forgivingConfig),
-    delete:      deleteMethod(docClient, forgivingConfig),
-    deleteMany:  deleteManyMethod(docClient, forgivingConfig),
-    consumeOne:  consumeOneMethod(docClient, forgivingConfig),
+    create:      applyMiddleware(extensions, "Create", createMethod(docClient, forgivingConfig)),
+    findOne:     applyMiddleware(extensions, "FindOne", findOneMethod(docClient, forgivingConfig)),
+    findMany:    applyMiddleware(extensions, "FindMany", findManyMethod(docClient, forgivingConfig)),
+    count:       applyMiddleware(extensions, "Count", countMethod(docClient, forgivingConfig)),
+    update:      applyMiddleware(extensions, "Update", updateMethod(docClient, forgivingConfig)),
+    updateMany:  applyMiddleware(extensions, "UpdateMany", updateManyMethod(docClient, forgivingConfig)),
+    delete:      applyMiddleware(extensions, "Delete", deleteMethod(docClient, forgivingConfig)),
+    deleteMany:  applyMiddleware(extensions, "DeleteMany", deleteManyMethod(docClient, forgivingConfig)),
+    consumeOne:  applyMiddleware(extensions, "ConsumeOne", consumeOneMethod(docClient, forgivingConfig)),
   };
 
   // Late-bound holder for the framework's transformInput/transformOutput.

@@ -22,7 +22,7 @@ import { compactExpr } from "../../helpers/expression-names";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { matchesClientFilters } from "../../helpers/resolve-item";
 import { resolveKEYS_ONLY } from "../../helpers/batch-get";
-import { fetchAllByPlan } from "../../helpers/fetch-all";
+import { fetchAllByPlan, type FetchAllPlan } from "../../helpers/fetch-all";
 import { shouldLog } from "../../helpers/debug-log";
 import { getTableName } from "../client";
 import { UnsupportedOptionError } from "../../errors";
@@ -134,7 +134,7 @@ export function findManyMethod(
         );
       }
 
-      let items = await fetchAllByPlan(docClient, tableName, plan as any);
+      let items = await fetchAllByPlan(docClient, tableName, plan as FetchAllPlan);
 
       // Client-side sort
       const dir = args.sortBy.direction === "desc" ? -1 : 1;

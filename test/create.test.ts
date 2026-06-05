@@ -1,19 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMethod } from "../src/adapter/methods/create";
-import type { DynamoDBAdapterConfig } from "../src/types";
+import { DEFAULT_TABLES, makeConfig } from "./helpers";
 
-// Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
   PutCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "PutCommand" })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "GetCommand" })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "UpdateCommand" })),
-  DeleteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "DeleteCommand" })),
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchGetCommand" })),
-  BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchWriteCommand" })),
-  TransactWriteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "TransactWriteCommand" })),
 }));
+
+function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {
+  const send = vi.fn().mockImplementation(sendImpl);
+  return { send, _calls: () => send.mock.calls.map((c: any) => c[0]) } as any;
+}
 
 // Mock email-uniqueness module — use vi.hoisted to avoid hoisting issue
 const { mockCreateWithEmail } = vi.hoisted(() => ({
@@ -22,25 +18,6 @@ const { mockCreateWithEmail } = vi.hoisted(() => ({
 vi.mock("../src/email-uniqueness", () => ({
   createUserWithEmailUniqueness: mockCreateWithEmail,
 }));
-
-function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {
-  const send = vi.fn().mockImplementation(sendImpl);
-  return { send, _calls: () => send.mock.calls.map((c: any) => c[0]) } as any;
-}
-
-function makeConfig(overrides: Partial<DynamoDBAdapterConfig> = {}): DynamoDBAdapterConfig {
-  return {
-    client: {} as any,
-    tables: {
-      user: "test-users",
-      session: "test-sessions",
-      account: "test-accounts",
-      verification: "test-verifications",
-      emailLookups: "test-email-lookups",
-    },
-    ...overrides,
-  } as any;
-}
 
 beforeEach(() => {
   mockCreateWithEmail.mockClear();
@@ -101,7 +78,10 @@ describe("create", () => {
 
   it("delegates to email-uniqueness when enableEmailUniqueness is true and model is user", async () => {
     const docClient = makeDocClient(async () => ({}));
-    const config = makeConfig({ enableEmailUniqueness: true });
+    const config = makeConfig({
+      enableEmailUniqueness: true,
+      tables: { ...DEFAULT_TABLES, emailLookups: "test-email-lookups" },
+    });
     const create = createMethod(docClient, config);
 
     const data = { id: "u1", email: "test@test.com", name: "Alice" };
@@ -113,7 +93,10 @@ describe("create", () => {
 
   it("does NOT delegate to email-uniqueness on non-user model even when flag is enabled", async () => {
     const docClient = makeDocClient(async () => ({}));
-    const config = makeConfig({ enableEmailUniqueness: true });
+    const config = makeConfig({
+      enableEmailUniqueness: true,
+      tables: { ...DEFAULT_TABLES, emailLookups: "test-email-lookups" },
+    });
     const create = createMethod(docClient, config);
 
     const data = { token: "tok1", userId: "u1" };
@@ -125,7 +108,10 @@ describe("create", () => {
 
   it("does NOT delegate to email-uniqueness when data has no email field", async () => {
     const docClient = makeDocClient(async () => ({}));
-    const config = makeConfig({ enableEmailUniqueness: true });
+    const config = makeConfig({
+      enableEmailUniqueness: true,
+      tables: { ...DEFAULT_TABLES, emailLookups: "test-email-lookups" },
+    });
     const create = createMethod(docClient, config);
 
     // User without email — should use standard PutItem

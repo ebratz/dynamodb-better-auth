@@ -80,11 +80,115 @@ export interface DynamoDBAdapterConfig {
   /** Max concurrent UpdateItem calls in updateMany. Default: 10. */
   updateManyConcurrency?: number;
 
+  /**
+   * Maximum items allowed in a single updateMany operation.
+   * Throws DynamoAdapterError("TOO_MANY_ITEMS") if exceeded.
+   * Default: 1000. Set to 0 to disable the limit.
+   */
+  maxUpdateManyItems?: number;
+
+  /**
+   * Maximum items allowed in a single deleteMany operation.
+   * Throws DynamoAdapterError("TOO_MANY_ITEMS") if exceeded.
+   * Default: 1000. Set to 0 to disable the limit.
+   */
+  maxDeleteManyItems?: number;
+
   /** Forwarded to adapter factory (plural table names). Default: false. */
   usePlural?: boolean;
 
   /** Enable per-operation debug logging. */
   debugLogs?: boolean | Record<string, boolean>;
+
+  /**
+   * Middleware extensions for audit logging, soft-delete, multi-tenancy, etc.
+   * Each extension implements optional hooks that fire before/after adapter
+   * operations. Hooks run sequentially in array order.
+   */
+  extensions?: DynamoAdapterMiddleware[];
+}
+
+// ── Middleware ──────────────────────────────────────────────────
+
+/**
+ * Extension point for adapter operations.
+ *
+ * Each hook is optional — implement only what you need. Before-hooks may
+ * return a partial args object to modify the operation (e.g., adding a
+ * tenantId to create data). After-hooks receive the original args plus
+ * the result for audit logging.
+ */
+export interface DynamoAdapterMiddleware {
+  /** Unique name for debugging / error attribution. */
+  name: string;
+
+  /** Called before create — may return modified data to replace args.data. */
+  onBeforeCreate?(args: { model: string; data: Record<string, unknown> }):
+    | Promise<Record<string, unknown> | void>
+    | Record<string, unknown>
+    | void;
+  onAfterCreate?(args: {
+    model: string;
+    data: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }): Promise<void> | void;
+
+  /** Called before update — may return { update } to modify the update payload. */
+  onBeforeUpdate?(args: {
+    model: string;
+    where: WhereClause[];
+    update: Record<string, unknown>;
+  }):
+    | Promise<Record<string, unknown> | void>
+    | Record<string, unknown>
+    | void;
+  onAfterUpdate?(args: {
+    model: string;
+    where: WhereClause[];
+    update: Record<string, unknown>;
+    result: Record<string, unknown> | null;
+  }): Promise<void> | void;
+
+  /** Called before delete. */
+  onBeforeDelete?(args: {
+    model: string;
+    where: WhereClause[];
+  }): Promise<void> | void;
+  onAfterDelete?(args: {
+    model: string;
+    where: WhereClause[];
+    result: Record<string, unknown> | null;
+  }): Promise<void> | void;
+
+  /** Called after findOne — useful for read-audit logging. */
+  onAfterFindOne?(args: {
+    model: string;
+    where: WhereClause[];
+    result: Record<string, unknown> | null;
+  }): Promise<void> | void;
+
+  /** Called after findMany. */
+  onAfterFindMany?(args: {
+    model: string;
+    where?: WhereClause[];
+    limit?: number;
+    result: Record<string, unknown>[];
+  }): Promise<void> | void;
+
+  /** Called after count. */
+  onAfterCount?(args: {
+    model: string;
+    where?: WhereClause[];
+    result: number;
+  }): Promise<void> | void;
+
+  /** Called before the TransactWriteCommand flush in a transaction. */
+  onBeforeTransaction?(args: { operations: number }): Promise<void> | void;
+  /** Called after the TransactWriteCommand flush. */
+  onAfterTransaction?(args: {
+    operations: number;
+    result: unknown;
+  }): Promise<void> | void;
 }
 
 // ── Where clause shape ──────────────────────────────────────────
