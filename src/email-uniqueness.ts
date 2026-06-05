@@ -15,11 +15,11 @@
 
 import {
   TransactWriteCommand,
-  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "./types";
 import { DynamoAdapterError } from "./errors";
+import { generateToken } from "./helpers/uuid";
 
 // ── Public API ──────────────────────────────────────────────────
 
@@ -372,28 +372,4 @@ export function buildEmailUniquenessActions(
   }
 }
 
-// ── Internal helpers ────────────────────────────────────────────
 
-let _crypto: any;
-function generateToken(): string {
-  if (!_crypto) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      _crypto = require("crypto");
-    } catch {
-      _crypto = {
-        randomUUID() {
-          return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-            /[xy]/g,
-            (c) => {
-              const r = (Math.random() * 16) | 0;
-              const v = c === "x" ? r : (r & 0x3) | 0x8;
-              return v.toString(16);
-            },
-          );
-        },
-      };
-    }
-  }
-  return _crypto.randomUUID();
-}

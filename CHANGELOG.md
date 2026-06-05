@@ -29,6 +29,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Centralized query planner:** all findOne, findMany, update, delete, and deleteMany methods now route through `resolveQueryPlan` from `helpers/query-planner.ts`, eliminating per-method planning code.
+- **Guards against accidental operations:**
+  - `deleteMany` with empty/undefined `where` throws `DynamoAdapterError` (`code: "INVALID_WHERE"`).
+  - `findMany` with `limit: 0` returns `[]` immediately with no DynamoDB call.
+  - PK/SK fields are silently stripped from `update` payloads (DynamoDB rejects key-attribute mutation).
+- **Edge-case test coverage:** 26 new tests in `test/edge-cases.test.ts` covering `limit:0`, empty where guards, PK/SK stripping, `between`/`not_in` operators, OR connector grouping, IN clause chunking, non-existent item update, and KEYS_ONLY UnprocessedKeys retry.
+
+### Fixed
+
+- **`not_in` and `between` operator support:** `convertWhereClause` now correctly handles `not_in` (NOT IN) and `between` (BETWEEN :lo AND :hi) operators, including chunking for >100 values.
+- **update.ts upsert prevention:** Tier 1 `UpdateItem` now includes `ConditionExpression: "attribute_exists(#pk)"` to prevent creating a new item when the target key doesn't exist. `ConditionalCheckFailedException` is caught and returned as `null`.
+- **KEYS_ONLY UnprocessedKeys retry in findMany:** `BatchGetCommand` retries with exponential backoff when `UnprocessedKeys` are returned, ensuring all items are eventually resolved.
+- **deleteMany KEYS_ONLY follow-up:** replaced sequential per-item `GetItem` calls with chunked `BatchGetCommand` (100 per batch), reducing round trips.
+- **buildSimpleFilter AND/OR grouping:** filter expressions now correctly group AND/OR clauses with proper parentheses instead of flattening all into AND.
+- **Inflated count in `unsafeBatchUpdate`:** count no longer inflates when a BatchWrite stream returns duplicate insertions.
+- **`consumeOne` email-lookup leak in transactions:** email-lookup entries are now properly included in the transactional buffer for `consumeOne` operations.
+
+### Changed
+
+- **generateToken extracted to shared utility:** the session/verification token generation is now centralized in `helpers/generate-token.ts`.
+- **Dead code removed:** per-method `buildSimpleFilter`, `resolveXxxPlan` functions deleted in favor of the centralized planner and `convertWhereClause`. Significant code deduplication across `findOne`, `findMany`, `update`, `delete`, and `deleteMany`.
+- **Documentation:** added "Limitations & Edge Cases" section to README with supported operators table, guard behaviors, PK/SK stripping, and item size caveat.
+
 ## [0.1.0] - 2026-05-30
 
 ### Added

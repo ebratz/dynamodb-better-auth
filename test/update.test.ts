@@ -268,6 +268,95 @@ describe("update", () => {
     expect(result).toEqual(existingUser);
   });
 
+  it("Tier 1: includes ConditionExpression attribute_exists(#pk)", async () => {
+    const calls: any[] = [];
+    const updatedUser = { id: "u1", name: "Alice Updated" };
+
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      return { Attributes: updatedUser };
+    });
+
+    const config = makeConfig();
+    const update = updateMethod(docClient, config);
+
+    await update({
+      model: "user",
+      where: [{ field: "id", operator: "eq", value: "u1" }],
+      update: { name: "Alice Updated" },
+    });
+
+    expect(calls[0].ConditionExpression).toBe("attribute_exists(#pk)");
+    expect(calls[0].ExpressionAttributeNames).toHaveProperty("#pk", "id");
+  });
+
+  it("strips PK and SK fields from update payload", async () => {
+    const calls: any[] = [];
+    const updatedUser = { id: "u1", name: "Renamed" };
+
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      return { Attributes: updatedUser };
+    });
+
+    const config = makeConfig();
+    const update = updateMethod(docClient, config);
+
+    await update({
+      model: "user",
+      where: [{ field: "id", operator: "eq", value: "u1" }],
+      update: { id: "should-be-ignored", name: "Renamed" },
+    });
+
+    const vals = calls[0].ExpressionAttributeValues;
+    const valKeys = Object.keys(vals);
+    // Only one value (for "name" — not "id")
+    expect(valKeys.length).toBe(1);
+    expect(vals[valKeys[0]!]).toBe("Renamed");
+    // The attr names should not include "id" as a SET field (only as #pk for condition)
+    const attrNames = calls[0].ExpressionAttributeNames;
+    const setFields = Object.entries(attrNames)
+      .filter(([k]) => k.startsWith("#n"))
+      .map(([, v]) => v);
+    expect(setFields).not.toContain("id");
+  });
+
+  it("strips composite PK and SK fields from update payload", async () => {
+    const calls: any[] = [];
+    const updatedAccount = {
+      id: "acc1",
+      providerId: "google",
+      accountId: "12345",
+      accessToken: "new-token",
+    };
+
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      return { Attributes: updatedAccount };
+    });
+
+    const config = makeConfig();
+    const update = updateMethod(docClient, config);
+
+    await update({
+      model: "account",
+      where: [
+        { field: "providerId", operator: "eq", value: "google" },
+        { field: "accountId", operator: "eq", value: "12345" },
+      ],
+      update: {
+        providerId: "should-be-ignored",
+        accountId: "should-also-be-ignored",
+        accessToken: "new-token",
+      },
+    });
+
+    const vals = calls[0].ExpressionAttributeValues;
+    const valKeys = Object.keys(vals);
+    // Only accessToken should remain
+    expect(valKeys.length).toBe(1);
+  });
+
   it("Tier 3 with multiple matches updates the first item only", async () => {
     const calls: any[] = [];
     const user1 = { id: "u1", name: "Alice" };

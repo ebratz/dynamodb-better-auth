@@ -8,6 +8,7 @@
  *   gte        → #field >= :val
  *   lt         → #field < :val
  *   lte        → #field <= :val
+ *   between    → #field BETWEEN :vN AND :vM
  *   in         → #field IN (:vN, ...)   (max 100 values; >100 → chunked OR)
  *   not_in     → NOT (#field IN (:vN, ...))
  *   contains   → contains(#field, :val)
@@ -205,6 +206,21 @@ export function convertWhereClause(
         frag = `begins_with(${fieldRef}, ${ref})`;
         break;
       }
+      case "between": {
+        const arr = Array.isArray(w.value) ? w.value : [];
+        if (arr.length !== 2) {
+          throw new UnsupportedOperatorError(
+            "between",
+            "BETWEEN requires exactly 2 values: [low, high].",
+          );
+        }
+        const loRef = `:v${valueIndex++}`;
+        const hiRef = `:v${valueIndex++}`;
+        values[loRef] = arr[0];
+        values[hiRef] = arr[1];
+        frag = `${fieldRef} BETWEEN ${loRef} AND ${hiRef}`;
+        break;
+      }
       case "ends_with": {
         throw new UnsupportedOperatorError(
           "ends_with",
@@ -214,7 +230,7 @@ export function convertWhereClause(
       default: {
         throw new UnsupportedOperatorError(
           operator,
-          `Operator not in the supported set: eq, ne, gt, gte, lt, lte, in, not_in, contains, starts_with.`,
+          `Operator not in the supported set: eq, ne, gt, gte, lt, lte, in, not_in, contains, starts_with, between.`,
         );
       }
     }

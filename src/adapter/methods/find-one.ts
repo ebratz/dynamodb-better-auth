@@ -1,7 +1,7 @@
 /**
  * findOne method — per DESIGN.md §5 (findOne method).
  *
- * Resolves query plan via three-tier strategy:
+ * Resolves query plan via centralized resolveQueryPlan:
  *   Tier 1: GetItem on PK (or composite PK+SK)
  *   Tier 2: Query on GSI with Limit:1
  *   Tier 3: Scan + FilterExpression with Limit:1
@@ -17,8 +17,8 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
-import { getKeySchema } from "../../helpers/key-builder";
 import { compactExpr } from "../../helpers/expression-names";
+import { resolveQueryPlan } from "../../helpers/query-planner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -38,8 +38,7 @@ export function findOneMethod(
       throw new Error(`No table configured for model "${args.model}"`);
     }
 
-    const schema = getKeySchema(args.model, config);
-    const plan = resolveFindOnePlan(args.where, args.model, schema, config);
+    const plan = resolveQueryPlan(args.where, args.model, config);
 
     if (config.debugLogs && plan.tier === 3) {
       const debug = typeof config.debugLogs === "object" ? config.debugLogs : {};
@@ -59,7 +58,18 @@ export function findOneMethod(
           Key: plan.key!,
         })
       );
-      return (result.Item as any) ?? null;
+      let item = (result.Item as any) ?? null;
+
+      // Apply client-side filters for extra clauses that GetItem can't enforce.
+      // The planner returns needsClientSideFilter when where-clause fields
+      // beyond PK/SK must be checked (DynamoDB GetItem has no FilterExpression).
+      if (item && plan.needsClientSideFilter && plan.clientSideFilters) {
+        if (!matchesClientFilters(item, plan.clientSideFilters)) {
+          return null;
+        }
+      }
+
+      return item;
     }
 
     // ── Tier 2: Query on GSI ─────────────────────────────────
@@ -111,158 +121,46 @@ export function findOneMethod(
   };
 }
 
-// ── Internal query planner (simplified; full impl in H4) ──────
+// ── Client-side filter applier ─────────────────────────────────
 
-interface FindOnePlan {
-  tier: 1 | 2 | 3;
-  operation: "getItem" | "query" | "scan";
-  indexName?: string;
-  key?: Record<string, any>;
-  keyCondition?: string;
-  filterExpression?: string;
-  expressionAttributeNames: Record<string, string>;
-  expressionAttributeValues: Record<string, any>;
-  needsFollowUpGetItem?: boolean;
-  followUpKeyFields?: { pkField: string; skField?: string };
-}
-
-function resolveFindOnePlan(
-  where: Where[],
-  model: string,
-  schema: { pkField: string; skField?: string },
-  config: DynamoDBAdapterConfig
-): FindOnePlan {
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
-
-  const fieldName = (f: string, i: number) => {
-    const nk = `#n${i}`;
-    names[nk] = f;
-    return nk;
-  };
-  const valRef = (v: any, i: number) => {
-    const vk = `:v${i}`;
-    values[vk] = v;
-    return vk;
-  };
-
-  // Tier 1: PK equality
-  const pkEq = where.filter(w => (!w.operator || w.operator === "eq") && (!w.connector || w.connector !== "OR"));
-  const pkMatch = pkEq.find(w => w.field === schema.pkField);
-  const skMatch = schema.skField ? pkEq.find(w => w.field === schema.skField) : undefined;
-
-  if (pkMatch && (schema.skField ? skMatch : true)) {
-    const key: Record<string, any> = {
-      [schema.pkField]: pkMatch.value,
-    };
-    if (schema.skField && skMatch) {
-      key[schema.skField] = skMatch.value;
-    }
-    const rest = pkEq.filter(w => w !== pkMatch && w !== skMatch);
-    const ors = where.filter(w => w.connector === "OR");
-    const extra = [...rest, ...ors];
-    return {
-      tier: 1,
-      operation: "getItem",
-      key,
-      ...(extra.length ? {
-        filterExpression: buildSimpleFilterExpr(extra, fieldName, valRef, names, values),
-      } : {}),
-      expressionAttributeNames: names,
-      expressionAttributeValues: values,
-    };
-  }
-
-  // Tier 2: Check for GSI match
-  const modelIndexes = config.indexes?.[model];
-  if (modelIndexes) {
-    for (const w of pkEq) {
-      const gsiDecl = modelIndexes[w.field];
-      if (gsiDecl) {
-        // Check for sort key condition
-        let sortCondition = "";
-        if (gsiDecl.rangeKey) {
-          const skW = pkEq.find(rw => rw.field === gsiDecl.rangeKey && rw !== w);
-          if (skW) {
-            const skRef = fieldName(gsiDecl.rangeKey, Object.keys(names).length);
-            if (skW.operator === "lt")      sortCondition = ` AND ${skRef} < ${valRef(skW.value, Object.keys(values).length)}`;
-            else if (skW.operator === "lte") sortCondition = ` AND ${skRef} <= ${valRef(skW.value, Object.keys(values).length)}`;
-            else if (skW.operator === "gt")  sortCondition = ` AND ${skRef} > ${valRef(skW.value, Object.keys(values).length)}`;
-            else if (skW.operator === "gte") sortCondition = ` AND ${skRef} >= ${valRef(skW.value, Object.keys(values).length)}`;
-            else if (skW.operator === "starts_with") sortCondition = ` AND begins_with(${skRef}, ${valRef(skW.value, Object.keys(values).length)})`;
-            else sortCondition = ` AND ${skRef} = ${valRef(skW.value, Object.keys(values).length)}`;
-          }
-        }
-
-        const fRef = fieldName(w.field, Object.keys(names).length);
-        const vRef = valRef(w.value, Object.keys(values).length);
-        const keyCond = `${fRef} = ${vRef}${sortCondition}`;
-
-        const rest = pkEq.filter(rw => rw !== w && rw.field !== gsiDecl.rangeKey);
-        const ors = where.filter(rw => rw.connector === "OR");
-
-        return {
-          tier: 2,
-          operation: "query",
-          indexName: gsiDecl.indexName,
-          keyCondition: keyCond,
-          ...([...rest, ...ors].length ? {
-            filterExpression: buildSimpleFilterExpr([...rest, ...ors], fieldName, valRef, names, values),
-          } : {}),
-          expressionAttributeNames: names,
-          expressionAttributeValues: values,
-          needsFollowUpGetItem: gsiDecl.projection === "KEYS_ONLY",
-          followUpKeyFields: gsiDecl.projection === "KEYS_ONLY"
-            ? { pkField: schema.pkField, skField: schema.skField }
-            : undefined,
-        };
+/**
+ * Evaluates client-side filters against a GetItem result.
+ * Used when Tier 1 has extra where-clause fields beyond PK/SK
+ * that DynamoDB's GetCommand cannot enforce server-side.
+ */
+function matchesClientFilters(
+  item: Record<string, any>,
+  filters: Array<{ field: string; operator: string; value: any }>,
+): boolean {
+  for (const f of filters) {
+    const itemVal = item[f.field];
+    switch (f.operator) {
+      case "eq":          if (itemVal !== f.value) return false; break;
+      case "ne":          if (itemVal === f.value) return false; break;
+      case "gt":          if (!(itemVal > f.value)) return false; break;
+      case "gte":         if (!(itemVal >= f.value)) return false; break;
+      case "lt":          if (!(itemVal < f.value)) return false; break;
+      case "lte":         if (!(itemVal <= f.value)) return false; break;
+      case "in": {
+        const arr = Array.isArray(f.value) ? f.value : [f.value];
+        if (!arr.includes(itemVal)) return false;
+        break;
       }
+      case "not_in": {
+        const arr = Array.isArray(f.value) ? f.value : [f.value];
+        if (arr.includes(itemVal)) return false;
+        break;
+      }
+      case "contains": {
+        if (typeof itemVal !== "string" || !itemVal.includes(String(f.value))) return false;
+        break;
+      }
+      case "starts_with": {
+        if (typeof itemVal !== "string" || !itemVal.startsWith(String(f.value))) return false;
+        break;
+      }
+      default: return false;
     }
   }
-
-  // Tier 3: Scan
-  const filter = buildSimpleFilterExpr(where, fieldName, valRef, names, values);
-  return {
-    tier: 3,
-    operation: "scan",
-    ...(filter ? { filterExpression: filter } : {}),
-    expressionAttributeNames: names,
-    expressionAttributeValues: values,
-  };
-}
-
-function buildSimpleFilterExpr(
-  where: Where[],
-  fieldName: (f: string, i: number) => string,
-  valRef: (v: any, i: number) => string,
-  names: Record<string, string>,
-  values: Record<string, any>
-): string {
-  const parts: string[] = [];
-
-  for (const w of where) {
-    const fRef = fieldName(w.field, Object.keys(names).length);
-    if (w.operator === "in" && Array.isArray(w.value)) {
-      const refs = w.value.map((v: any) => valRef(v, Object.keys(values).length));
-      parts.push(`${fRef} IN (${refs.join(", ")})`);
-    } else if (w.operator === "gt")      parts.push(`${fRef} > ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "gte")        parts.push(`${fRef} >= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lt")         parts.push(`${fRef} < ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lte")        parts.push(`${fRef} <= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "ne")         parts.push(`${fRef} <> ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "starts_with") parts.push(`begins_with(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else if (w.operator === "contains")   parts.push(`contains(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else parts.push(`${fRef} = ${valRef(w.value, Object.keys(values).length)}`);
-  }
-
-  // Separate AND/OR
-  const andW = where.filter(w => !w.connector || w.connector !== "OR");
-  const orW = where.filter(w => w.connector === "OR");
-
-  const andPart = parts.slice(0, andW.length).join(" AND ");
-  const orPart = parts.slice(andW.length).join(" OR ");
-
-  if (andW.length && orW.length) return `(${andPart}) AND (${orPart})`;
-  if (orW.length) return orPart;
-  return andPart;
+  return true;
 }

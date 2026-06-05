@@ -174,6 +174,62 @@ describe("findMany", () => {
     expect(batchGetCalls.length).toBe(3);
   });
 
+  it("Tier 2: KEYS_ONLY BatchGet retries UnprocessedKeys", async () => {
+    const gsiItems = [
+      { providerId: "google", accountId: "g1" },
+      { providerId: "google", accountId: "g2" },
+      { providerId: "google", accountId: "g3" },
+    ];
+    const fullItems = [
+      { providerId: "google", accountId: "g1", id: "acc1", userId: "u1" },
+      { providerId: "google", accountId: "g2", id: "acc2", userId: "u2" },
+      { providerId: "google", accountId: "g3", id: "acc3", userId: "u3" },
+    ];
+
+    let batchGetCallCount = 0;
+    const docClient = makeDocClient([
+      // Query returns 3 GSI items
+      { Items: gsiItems },
+      // First BatchGet: 1 unprocessed key
+      {
+        Responses: {
+          "test-accounts": [fullItems[0]!],
+        },
+        UnprocessedKeys: {
+          "test-accounts": {
+            Keys: [{ providerId: "google", accountId: "g2" }],
+          },
+        },
+      },
+      // Second BatchGet (retry): remaining 2
+      {
+        Responses: {
+          "test-accounts": [fullItems[1]!, fullItems[2]!],
+        },
+      },
+    ] as any);
+
+    const config = makeConfig({
+      indexes: {
+        account: {
+          id: { indexName: "by-id", hashKey: "id", projection: "KEYS_ONLY" },
+        },
+      },
+    });
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "account",
+      where: [{ field: "id", operator: "eq", value: "acc1" }],
+    });
+
+    // Should still get all 3 items after retry
+    expect(result.length).toBe(3);
+    expect(result[0]!.userId).toBe("u1");
+    expect(result[1]!.userId).toBe("u2");
+    expect(result[2]!.userId).toBe("u3");
+  });
+
   it("Tier 2: sortBy mismatch triggers client-side sort + warning", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const docClient = makeDocClient([
@@ -269,6 +325,53 @@ describe("findMany", () => {
     // With connectors [AND, AND, OR], the filter groups AND clauses then OR clause
     // Result: (A AND B) AND (C) — contains AND (from grouping), C is wrapped standalone
     expect(scanCmd.FilterExpression).toContain("AND");
+  });
+
+  it("limit: 0 returns empty array without scanning", async () => {
+    const calls: any[] = [];
+    const docClient = {
+      send: vi.fn().mockImplementation(async (cmd: any) => {
+        calls.push(cmd);
+        return { Items: [] };
+      }),
+      _calls: () => calls,
+    } as any;
+
+    const config = makeConfig();
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      limit: 0,
+    });
+
+    expect(result).toEqual([]);
+    // Should return early without making any DynamoDB calls
+    expect(calls.length).toBe(0);
+  });
+
+  it("limit: 0 with sortBy returns empty array without scanning", async () => {
+    const calls: any[] = [];
+    const docClient = {
+      send: vi.fn().mockImplementation(async (cmd: any) => {
+        calls.push(cmd);
+        return { Items: [] };
+      }),
+      _calls: () => calls,
+    } as any;
+
+    const config = makeConfig();
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      limit: 0,
+      sortBy: { field: "name", direction: "asc" },
+    });
+
+    expect(result).toEqual([]);
+    // Should return early without making any DynamoDB calls
+    expect(calls.length).toBe(0);
   });
 
   // Regression for issue #3 — DynamoDB rejects requests that carry
