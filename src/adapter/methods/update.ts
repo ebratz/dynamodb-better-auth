@@ -24,6 +24,7 @@ import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan } from "../../helpers/resolve-item";
 import { buildUpdateExpression } from "../../helpers/update-item";
 import { getTableName } from "../client";
+import { DynamoAdapterError } from "../../errors";
 
 export function updateMethod(
   docClient: DynamoDBDocumentClient,
@@ -110,7 +111,11 @@ export function updateMethod(
       if (err.name === "ConditionalCheckFailedException") {
         return null;
       }
-      throw err;
+      throw new DynamoAdapterError(
+        "DYNAMODB_ERROR",
+        err.message || "Unexpected DynamoDB error",
+        err,
+      );
     }
   };
 }

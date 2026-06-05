@@ -151,7 +151,11 @@ export function createTransactionWrapper(
             err,
           );
         }
-        throw err;
+        throw new DynamoAdapterError(
+          "DYNAMODB_ERROR",
+          err.message || "Unexpected DynamoDB error",
+          err,
+        );
       }
     }
 

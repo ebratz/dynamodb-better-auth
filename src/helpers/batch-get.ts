@@ -13,8 +13,14 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
 
-const BATCH_SIZE = 100;
-const MAX_RETRY_ATTEMPTS = 3;
+import {
+  BATCH_GET_SIZE,
+  MAX_RETRY_ATTEMPTS,
+  RETRY_BACKOFF_BASE_MS,
+  RETRY_JITTER_MS,
+} from "./constants";
+
+const BATCH_SIZE = BATCH_GET_SIZE;
 
 /**
  * Resolves full items from KEYS_ONLY GSI results via BatchGetCommand.
@@ -70,7 +76,7 @@ async function _batchGetWithRetry(
   const unprocessed = (result.UnprocessedKeys as any)?.[tableName]?.Keys;
   if (unprocessed && unprocessed.length > 0 && attempt < MAX_RETRY_ATTEMPTS) {
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.pow(2, attempt - 1) * 100 + Math.random() * 50),
+      setTimeout(resolve, Math.pow(2, attempt - 1) * RETRY_BACKOFF_BASE_MS + Math.random() * RETRY_JITTER_MS),
     );
     const retryResults = await _batchGetWithRetry(
       docClient,

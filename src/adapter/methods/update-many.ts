@@ -25,7 +25,9 @@ import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { findAllItems } from "../../helpers/find-items";
 import { buildUpdateExpression } from "../../helpers/update-item";
+import { BATCH_WRITE_SIZE, MAX_RETRY_ATTEMPTS, RETRY_BACKOFF_BASE_MS, RETRY_JITTER_MS } from "../../helpers/constants";
 import { shouldLog } from "../../helpers/debug-log";
+import { getLogger } from "../../helpers/logger";
 import { getTableName } from "../client";
 import { DynamoAdapterError } from "../../errors";
 
@@ -136,7 +138,11 @@ async function _updateOne(
     if (err.name === "ConditionalCheckFailedException") {
       return false;
     }
-    throw err;
+    throw new DynamoAdapterError(
+      "DYNAMODB_ERROR",
+      err.message || "Unexpected DynamoDB error",
+      err,
+    );
   }
 }
 
@@ -150,19 +156,19 @@ async function _batchPutUpdate(
   config: DynamoDBAdapterConfig,
 ): Promise<number> {
   if (shouldLog(config, "updateMany")) {
-    console.warn(
+    getLogger(config).warn(
       `[dynamodb-adapter] updateMany using unsafeBatchUpdate — ` +
         `full-item overwrite (last-write-wins).`,
+      { tableName },
     );
   }
 
   let updated = 0;
 
-  // Chunk into batches of 25 (DynamoDB BatchWrite limit)
-  const BATCH_SIZE = 25;
+  // Chunk into batches of BATCH_WRITE_SIZE (25)
 
-  for (let i = 0; i < items.length; i += BATCH_SIZE) {
-    const chunk = items.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < items.length; i += BATCH_WRITE_SIZE) {
+    const chunk = items.slice(i, i + BATCH_WRITE_SIZE);
     const putRequests = chunk.map((item) => {
       const patched = { ...item, ...update };
       return {
@@ -181,9 +187,9 @@ async function _batchPutUpdate(
     // Retry UnprocessedItems up to 3 times with exponential backoff
     let retries = 0;
     let unprocessed = result.UnprocessedItems;
-    while (unprocessed && Object.keys(unprocessed).length > 0 && retries < 3) {
-      // Exponential backoff with jitter: 100ms / 200ms / 400ms + random 0-50ms
-      await new Promise((r) => setTimeout(r, Math.pow(2, retries) * 100 + Math.random() * 50));
+    while (unprocessed && Object.keys(unprocessed).length > 0 && retries < MAX_RETRY_ATTEMPTS) {
+      // Exponential backoff with jitter
+      await new Promise((r) => setTimeout(r, Math.pow(2, retries) * RETRY_BACKOFF_BASE_MS + Math.random() * RETRY_JITTER_MS));
       const retryResult = await docClient.send(
         new BatchWriteCommand({
           RequestItems: unprocessed,

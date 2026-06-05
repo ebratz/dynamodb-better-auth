@@ -1,6 +1,9 @@
 import { InvalidWhereError } from "../errors";
 import type { DynamoDBAdapterConfig, KeySchema } from "../types";
 
+/** Module-level cache: model → schema. Immutable once resolved. */
+const schemaCache = new Map<string, KeySchema>();
+
 /**
  * Returns the key schema (pkField, skField?) for a model.
  * Resolution order:
@@ -8,16 +11,24 @@ import type { DynamoDBAdapterConfig, KeySchema } from "../types";
  *   2. Hardcoded core models
  *   3. Default { pkField: "id" } for plugin models
  *
+ * Results are memoized per model name — schemas are immutable once computed.
+ *
  * Per DESIGN.md §2 + review-gap fix C.
  */
 export function getKeySchema(
   model: string,
   config: DynamoDBAdapterConfig
 ): KeySchema {
-  // 1. Explicit override
+  // 1. Explicit override — config-specific, never cached
   if (config.keySchemas?.[model]) {
     return config.keySchemas[model]!;
   }
+
+  // 2-3. Core models + plugin defaults — immutable per model name
+  const cached = schemaCache.get(model);
+  if (cached) return cached;
+
+  let result: KeySchema;
 
   // 2. Hardcoded core models
   const coreSchemas: Record<string, KeySchema> = {
@@ -29,11 +40,15 @@ export function getKeySchema(
   };
 
   if (coreSchemas[model]) {
-    return coreSchemas[model]!;
+    result = coreSchemas[model]!;
+    schemaCache.set(model, result);
+    return result;
   }
 
   // 3. Plugin models default to PK=id
-  return { pkField: "id" };
+  result = { pkField: "id" };
+  schemaCache.set(model, result);
+  return result;
 }
 
 /**

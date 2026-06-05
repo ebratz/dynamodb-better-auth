@@ -14,6 +14,7 @@ import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { resolveFilter } from "../../helpers/query-planner";
 import { getTableName } from "../client";
 import { shouldLog } from "../../helpers/debug-log";
+import { getLogger } from "../../helpers/logger";
 
 export function countMethod(
   docClient: DynamoDBDocumentClient,
@@ -23,7 +24,8 @@ export function countMethod(
     model: string;
     where?: WhereClause[];
   }): Promise<number> => {
-    const tableName = getTableName(args.model, config);
+    const { model } = args;
+    const tableName = getTableName(model, config);
     const threshold = config.warnOnLargeCount ?? 10_000;
     const where = args.where ?? [];
 
@@ -89,9 +91,10 @@ export function countMethod(
           totalScanned > threshold &&
           shouldLog(config, "count")
         ) {
-          console.warn(
+          getLogger(config).warn(
             `[dynamodb-adapter] count() queried ${totalScanned} items on ${tableName} ` +
               `(threshold: ${threshold}). Consider adding a counter pattern for large tables.`,
+            { tableName, model, totalScanned, threshold },
           );
         }
 
@@ -132,9 +135,10 @@ export function countMethod(
 
     // Warn on large scans
     if (threshold > 0 && totalScanned > threshold && shouldLog(config, "count")) {
-      console.warn(
+      getLogger(config).warn(
         `[dynamodb-adapter] count() scanned ${totalScanned} items on ${tableName} ` +
         `(threshold: ${threshold}). Consider adding a counter pattern for large tables.`,
+        { tableName, model, totalScanned, threshold },
       );
     }
 

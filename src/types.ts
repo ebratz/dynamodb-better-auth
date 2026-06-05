@@ -101,11 +101,44 @@ export interface DynamoDBAdapterConfig {
   debugLogs?: boolean | Record<string, boolean>;
 
   /**
+   * Custom logger for adapter warnings and debug messages.
+   * Defaults to console.warn / console.debug when not provided.
+   */
+  logger?: AdapterLogger;
+
+  /**
+   * Max items to scan in findMany Tier 3 with sortBy.
+   * When the full-table sort fetches more than this, throws
+   * DynamoAdapterError("SCAN_LIMIT_EXCEEDED").
+   * Default: 10_000. Set to 0 to disable the limit.
+   */
+  maxScanItems?: number;
+
+  /**
+   * Hook for latency / error metrics.
+   * Called after every adapter operation with operation name, model,
+   * duration in milliseconds, and optional error.
+   */
+  metrics?: AdapterMetrics;
+
+  /**
    * Middleware extensions for audit logging, soft-delete, multi-tenancy, etc.
    * Each extension implements optional hooks that fire before/after adapter
    * operations. Hooks run sequentially in array order.
    */
   extensions?: DynamoAdapterMiddleware[];
+}
+
+// ── Logger ─────────────────────────────────────────────────────
+
+/**
+ * Pluggable logger interface for adapter warnings and debug output.
+ * Pass a custom implementation via config.logger to capture structured
+ * log data instead of relying on console.warn / console.debug.
+ */
+export interface AdapterLogger {
+  warn(message: string, meta?: Record<string, unknown>): void;
+  debug?(message: string, meta?: Record<string, unknown>): void;
 }
 
 // ── Middleware ──────────────────────────────────────────────────
@@ -189,6 +222,18 @@ export interface DynamoAdapterMiddleware {
     operations: number;
     result: unknown;
   }): Promise<void> | void;
+}
+
+// ── Metrics ─────────────────────────────────────────────────────
+
+/** Callback for operational latency / error metrics. */
+export interface AdapterMetrics {
+  (event: {
+    operation: string;
+    model: string;
+    durationMs: number;
+    error?: Error;
+  }): void;
 }
 
 // ── Where clause shape ──────────────────────────────────────────

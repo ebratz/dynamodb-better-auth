@@ -17,6 +17,7 @@ import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { getTableName } from "../client";
 import { findAllItems } from "../../helpers/find-items";
+import { BATCH_WRITE_SIZE, MAX_RETRY_ATTEMPTS, RETRY_BACKOFF_BASE_MS, RETRY_JITTER_MS } from "../../helpers/constants";
 import { DynamoAdapterError } from "../../errors";
 
 export function deleteManyMethod(
@@ -69,12 +70,11 @@ export function deleteManyMethod(
       return key;
     });
 
-    // ── Batch delete in chunks of 25 ──────────────────────────
+    // ── Batch delete in chunks of BATCH_WRITE_SIZE (25) ───────
     let deletedCount = 0;
-    const BATCH_SIZE = 25;
 
-    for (let i = 0; i < keys.length; i += BATCH_SIZE) {
-      const chunk = keys.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < keys.length; i += BATCH_WRITE_SIZE) {
+      const chunk = keys.slice(i, i + BATCH_WRITE_SIZE);
       const deleted = await _batchDeleteWithRetry(docClient, tableName, chunk);
       deletedCount += deleted;
     }
@@ -89,8 +89,6 @@ async function _batchDeleteWithRetry(
   keys: Record<string, any>[],
   attempt = 1,
 ): Promise<number> {
-  const MAX_ATTEMPTS = 3;
-
   const result = await docClient.send(
     new BatchWriteCommand({
       RequestItems: {
@@ -104,13 +102,13 @@ async function _batchDeleteWithRetry(
   let deletedCount = keys.length;
 
   const unprocessed = (result.UnprocessedItems as any)?.[tableName];
-  if (unprocessed && unprocessed.length > 0 && attempt < MAX_ATTEMPTS) {
+  if (unprocessed && unprocessed.length > 0 && attempt < MAX_RETRY_ATTEMPTS) {
     const unprocessedKeys = unprocessed.map(
       (u: any) => u.DeleteRequest!.Key,
     );
-    // Exponential backoff with jitter: 100ms / 200ms / 400ms + random 0-50ms
+    // Exponential backoff with jitter
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.pow(2, attempt - 1) * 100 + Math.random() * 50),
+      setTimeout(resolve, Math.pow(2, attempt - 1) * RETRY_BACKOFF_BASE_MS + Math.random() * RETRY_JITTER_MS),
     );
     const retryDeleted = await _batchDeleteWithRetry(
       docClient,

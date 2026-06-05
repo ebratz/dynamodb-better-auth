@@ -19,6 +19,7 @@ import { resolveQueryPlan } from "./query-planner";
 import { resolveKEYS_ONLY } from "./batch-get";
 import { fetchAllByPlan, type FetchAllPlan } from "./fetch-all";
 import { shouldLog } from "./debug-log";
+import { getLogger } from "./logger";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
@@ -79,9 +80,10 @@ export async function findAllItems(
 
   // ── Tier 3: Scan ────────────────────────────────────────────
   if (opts?.debugKey && shouldLog(config, opts.debugKey)) {
-    console.warn(
+    getLogger(config).warn(
       `[dynamodb-adapter] ${opts.debugKey} on ${model} using Scan (Tier 3). ` +
         `Consider adding a GSI for the queried field(s).`,
+      { model, debugKey: opts.debugKey },
     );
   }
 

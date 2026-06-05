@@ -24,8 +24,10 @@ import { matchesClientFilters } from "../../helpers/resolve-item";
 import { resolveKEYS_ONLY } from "../../helpers/batch-get";
 import { fetchAllByPlan, type FetchAllPlan } from "../../helpers/fetch-all";
 import { shouldLog } from "../../helpers/debug-log";
+import { getLogger } from "../../helpers/logger";
 import { getTableName } from "../client";
-import { UnsupportedOptionError } from "../../errors";
+import { DEFAULT_FIND_MANY_LIMIT } from "../../helpers/constants";
+import { UnsupportedOptionError, DynamoAdapterError } from "../../errors";
 
 export function findManyMethod(
   docClient: DynamoDBDocumentClient,
@@ -44,7 +46,7 @@ export function findManyMethod(
     const tableName = getTableName(model, config);
 
     // Guard: limit 0 → empty array (avoid unnecessary DDB calls)
-    const limit = args.limit ?? 100;
+    const limit = args.limit ?? DEFAULT_FIND_MANY_LIMIT;
     if (limit <= 0) return [];
 
     const plan = resolveQueryPlan(args.where ?? [], model, config);
@@ -98,9 +100,10 @@ export function findManyMethod(
       // Client-side sort when sortBy doesn't match GSI range key
       if (args.sortBy && needsClientSort) {
         if (shouldLog(config, "findMany")) {
-          console.warn(
+          getLogger(config).warn(
             `[dynamodb-adapter] findMany on ${model}: sortBy field ` +
-            `"${args.sortBy.field}" does not match sort key — sorting client-side.`
+            `"${args.sortBy.field}" does not match sort key — sorting client-side.`,
+            { model, sortByField: args.sortBy.field },
           );
         }
         const dir = args.sortBy.direction === "desc" ? -1 : 1;
@@ -125,16 +128,29 @@ export function findManyMethod(
 
     // ── Tier 3: Scan + Filter ────────────────────────────────
 
-    // Gap D fix: if sortBy is set, fetch ALL pages first
+    // Gap D fix: if sortBy is set, fetch ALL pages first.
+    // Guard: throttle the scan to prevent unbounded table reads.
     if (args.sortBy) {
+      const maxScanItems = config.maxScanItems ?? 10_000;
+
       if (shouldLog(config, "findMany")) {
-        console.warn(
+        getLogger(config).warn(
           `[dynamodb-adapter] findMany on ${model} using Scan with sortBy — ` +
-          `fetching all matching items for client-side sort. Add a GSI to avoid this.`
+          `fetching all matching items for client-side sort. Add a GSI to avoid this.`,
+          { model },
         );
       }
 
       let items = await fetchAllByPlan(docClient, tableName, plan as FetchAllPlan);
+
+      // Cap: prevent unbounded full-table scans for a small limit
+      if (maxScanItems > 0 && items.length > maxScanItems) {
+        throw new DynamoAdapterError(
+          "SCAN_LIMIT_EXCEEDED",
+          `findMany with sortBy scanned ${items.length} items (max: ${maxScanItems}). ` +
+          `Add a GSI for the sort field ("${args.sortBy.field}") or increase maxScanItems.`,
+        );
+      }
 
       // Client-side sort
       const dir = args.sortBy.direction === "desc" ? -1 : 1;
@@ -149,9 +165,10 @@ export function findManyMethod(
       // Client-side offset
       if (args.offset && args.offset > 0) {
         if (shouldLog(config, "findMany")) {
-          console.warn(
+          getLogger(config).warn(
             `[dynamodb-adapter] findMany client-side offset ${args.offset} on ${model} — ` +
-            `skipped items still consumed RCU.`
+            `skipped items still consumed RCU.`,
+            { model, offset: args.offset },
           );
         }
         items = items.slice(args.offset);
@@ -173,9 +190,10 @@ export function findManyMethod(
     // Client-side offset via discard
     if (args.offset && args.offset > 0) {
       if (shouldLog(config, "findMany")) {
-        console.warn(
+        getLogger(config).warn(
           `[dynamodb-adapter] findMany client-side offset ${args.offset} on ${model} — ` +
-          `discarded items still consumed RCU.`
+          `discarded items still consumed RCU.`,
+          { model, offset: args.offset },
         );
       }
       items = items.slice(args.offset);

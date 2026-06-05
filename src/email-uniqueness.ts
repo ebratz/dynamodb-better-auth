@@ -33,8 +33,8 @@ import { buildUpdateExpression } from "./helpers/update-item";
 /**
  * Detects an email uniqueness violation inside a TransactionCanceledException.
  * Checks each cancellation reason against the corresponding transact item:
- * if the item is an email-lookup Put (identified by #pk → "email" or table-name
- * match) and its reason is ConditionalCheckFailed, this is an EMAIL_EXISTS.
+ * if the item has _meta.type === "email-lookup" and its reason
+ * is ConditionalCheckFailed, this is an EMAIL_EXISTS.
  *
  * Returns a DynamoAdapterError("EMAIL_EXISTS", ...) or null.
  */
@@ -50,12 +50,8 @@ export function parseEmailUniquenessError(
   for (let i = 0; i < reasons.length; i++) {
     if (reasons[i]?.Code === "ConditionalCheckFailed") {
       const item = transactItems[i];
-      // Detect email-lookup Put: #pk maps to "email", or the item targets
-      // the configured emailLookups table.
-      if (
-        item?.Put?.ExpressionAttributeNames?.["#pk"] === "email" ||
-        item?.Put?.TableName === emailTable
-      ) {
+      // Detect email-lookup items by _meta tag (set by buildEmailUniquenessActions)
+      if (item?._meta?.type === "email-lookup") {
         return new DynamoAdapterError(
           "EMAIL_EXISTS",
           "Email is already registered",
@@ -130,7 +126,11 @@ export async function createUserWithEmailUniqueness(
         err,
       );
     }
-    throw err;
+    throw new DynamoAdapterError(
+      "DYNAMODB_ERROR",
+      err.message || "Unexpected DynamoDB error",
+      err,
+    );
   }
 }
 
@@ -247,16 +247,20 @@ export async function updateUserEmailWithUniqueness(
         err,
       );
     }
-    throw err;
+    throw new DynamoAdapterError(
+      "DYNAMODB_ERROR",
+      err.message || "Unexpected DynamoDB error",
+      err,
+    );
   }
 }
 
 // ── Transaction helper (for X1) ─────────────────────────────────
 
 type TransactWriteItem =
-  | { Put: { TableName: string; Item: Record<string, unknown>; ConditionExpression?: string; ExpressionAttributeNames?: Record<string, string> } }
-  | { Delete: { TableName: string; Key: Record<string, unknown> } }
-  | { Update: { TableName: string; Key: Record<string, unknown>; UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; ConditionExpression?: string } };
+  | { Put: { TableName: string; Item: Record<string, unknown>; ConditionExpression?: string; ExpressionAttributeNames?: Record<string, string> }; _meta?: { type: string } }
+  | { Delete: { TableName: string; Key: Record<string, unknown> }; _meta?: { type: string } }
+  | { Update: { TableName: string; Key: Record<string, unknown>; UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; ConditionExpression?: string }; _meta?: { type: string } };
 
 /**
  * Builds the email-lookup TransactWriteItems that should be included
@@ -297,6 +301,7 @@ export function buildEmailUniquenessActions(
       const emailLower = email.toLowerCase();
       return [
         {
+          _meta: { type: "email-lookup" },
           Put: {
             TableName: emailTable,
             Item: { email: emailLower, userId },
@@ -313,6 +318,7 @@ export function buildEmailUniquenessActions(
 
       return [
         {
+          _meta: { type: "email-lookup" },
           Delete: {
             TableName: emailTable,
             Key: { email },
@@ -330,12 +336,14 @@ export function buildEmailUniquenessActions(
 
       return [
         {
+          _meta: { type: "email-lookup" },
           Delete: {
             TableName: emailTable,
             Key: { email: oldEmailLower },
           },
         },
         {
+          _meta: { type: "email-lookup" },
           Put: {
             TableName: emailTable,
             Item: { email: newEmailLower, userId },

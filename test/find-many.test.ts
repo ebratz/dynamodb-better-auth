@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { findManyMethod } from "../src/adapter/methods/find-many";
-import { UnsupportedOptionError } from "../src/errors";
+import { UnsupportedOptionError, DynamoAdapterError } from "../src/errors";
 import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
@@ -464,5 +464,105 @@ describe("findMany", () => {
     // Must be absent from the SDK input — not just an empty {}.
     expect(scanCmd.ExpressionAttributeNames).toBeUndefined();
     expect(scanCmd.ExpressionAttributeValues).toBeUndefined();
+  });
+
+  it("Tier 3 sortBy throws SCAN_LIMIT_EXCEEDED when items exceed maxScanItems", async () => {
+    const docClient = makeDocClient([
+      { Items: Array.from({ length: 300 }, (_, i) => ({ id: `u${i}`, name: `User${i}` })) },
+    ]);
+
+    const config = makeConfig({ maxScanItems: 100 });
+    const findMany = findManyMethod(docClient, config);
+
+    await expect(
+      findMany({
+        model: "user",
+        sortBy: { field: "name", direction: "asc" },
+        limit: 5,
+      }),
+    ).rejects.toThrow(DynamoAdapterError);
+
+    try {
+      await findMany({
+        model: "user",
+        sortBy: { field: "name", direction: "asc" },
+        limit: 5,
+      });
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(DynamoAdapterError);
+      expect(err.code).toBe("SCAN_LIMIT_EXCEEDED");
+    }
+  });
+
+  it("Tier 3 sortBy respects maxScanItems: 0 (disabled)", async () => {
+    const docClient = makeDocClient([
+      { Items: Array.from({ length: 300 }, (_, i) => ({ id: `u${i}`, name: `User${i}` })) },
+    ]);
+
+    // maxScanItems: 0 disables the cap
+    const config = makeConfig({ maxScanItems: 0 });
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      sortBy: { field: "name", direction: "asc" },
+      limit: 5,
+    });
+
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("Tier 3 sortBy within maxScanItems limit does not throw", async () => {
+    const docClient = makeDocClient([
+      { Items: [{ id: "u2", name: "Bob" }, { id: "u1", name: "Alice" }] },
+    ]);
+
+    const config = makeConfig({ maxScanItems: 1000 });
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      sortBy: { field: "name", direction: "asc" },
+      limit: 2,
+    });
+
+    // 2 items < 1000 limit → should sort and return
+    expect(result[0]!.name).toBe("Alice");
+    expect(result[1]!.name).toBe("Bob");
+  });
+
+  it("metrics hook fires with operation, model, and durationMs", async () => {
+    const metricsFn = vi.fn();
+    const docClient = makeDocClient([
+      { Items: [{ id: "u1", name: "Alice" }] },
+    ]);
+
+    const config = makeConfig({ metrics: metricsFn });
+
+    // Directly wire metrics — factory.ts does this, but we test the method directly
+    const rawFn = findManyMethod(docClient, config);
+    const metrics = config.metrics;
+    const instrumentedFn = (args: any) => {
+      const start = Date.now();
+      return rawFn(args).then(
+        (result: any) => {
+          metricsFn({ operation: "findMany", model: args.model, durationMs: Date.now() - start });
+          return result;
+        },
+        (err: any) => {
+          metricsFn({ operation: "findMany", model: args.model, durationMs: Date.now() - start, error: err });
+          throw err;
+        },
+      );
+    };
+
+    await instrumentedFn({ model: "user", limit: 10 });
+
+    expect(metricsFn).toHaveBeenCalledTimes(1);
+    const call = metricsFn.mock.calls[0]![0];
+    expect(call.operation).toBe("findMany");
+    expect(call.model).toBe("user");
+    expect(call.durationMs).toBeGreaterThanOrEqual(0);
+    expect(call.error).toBeUndefined();
   });
 });

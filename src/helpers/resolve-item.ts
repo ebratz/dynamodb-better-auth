@@ -11,6 +11,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../types";
 import { compactExpr } from "./expression-names";
 import { shouldLog } from "./debug-log";
+import { getLogger } from "./logger";
 import type { resolveQueryPlan } from "./query-planner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,9 +64,10 @@ export async function resolveItemByPlan(
 
   // ── Tier 3: Scan ──────────────────────────────────────────
   if (shouldLog(config, model)) {
-    console.warn(
+    getLogger(config).warn(
       `[dynamodb-adapter] ${model} using Scan (Tier 3). ` +
         `Consider adding a GSI for the queried field(s).`,
+      { model },
     );
   }
 

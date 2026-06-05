@@ -9,6 +9,7 @@ import { createAdapterFactory } from "better-auth/adapters";
 import type { DynamoDBAdapterConfig } from "../types";
 import { resolveDocClient, getTableName } from "./client";
 import { applyMiddleware } from "../helpers/apply-middleware";
+import { measureLatency } from "../helpers/metrics";
 import { createMethod } from "./methods/create";
 import { findOneMethod } from "./methods/find-one";
 import { findManyMethod } from "./methods/find-many";
@@ -51,19 +52,44 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
 
   const forgivingConfig: DynamoDBAdapterConfig = { ...config, tables };
   const extensions = forgivingConfig.extensions ?? [];
+  const metrics = forgivingConfig.metrics;
 
   // ── Build native adapter (non-transactional) ────────────────
+  // Chain: raw method → middleware → metrics
   const nativeMethods = {
-    create:      applyMiddleware(extensions, "Create", createMethod(docClient, forgivingConfig)),
-    findOne:     applyMiddleware(extensions, "FindOne", findOneMethod(docClient, forgivingConfig)),
-    findMany:    applyMiddleware(extensions, "FindMany", findManyMethod(docClient, forgivingConfig)),
-    count:       applyMiddleware(extensions, "Count", countMethod(docClient, forgivingConfig)),
-    update:      applyMiddleware(extensions, "Update", updateMethod(docClient, forgivingConfig)),
-    updateMany:  applyMiddleware(extensions, "UpdateMany", updateManyMethod(docClient, forgivingConfig)),
-    delete:      applyMiddleware(extensions, "Delete", deleteMethod(docClient, forgivingConfig)),
-    deleteMany:  applyMiddleware(extensions, "DeleteMany", deleteManyMethod(docClient, forgivingConfig)),
-    consumeOne:  applyMiddleware(extensions, "ConsumeOne", consumeOneMethod(docClient, forgivingConfig)),
+    create: wrapWithMetrics("create", "user",
+      applyMiddleware(extensions, "Create", createMethod(docClient, forgivingConfig))),
+    findOne: wrapWithMetrics("findOne", "",
+      applyMiddleware(extensions, "FindOne", findOneMethod(docClient, forgivingConfig))),
+    findMany: wrapWithMetrics("findMany", "",
+      applyMiddleware(extensions, "FindMany", findManyMethod(docClient, forgivingConfig))),
+    count: wrapWithMetrics("count", "",
+      applyMiddleware(extensions, "Count", countMethod(docClient, forgivingConfig))),
+    update: wrapWithMetrics("update", "",
+      applyMiddleware(extensions, "Update", updateMethod(docClient, forgivingConfig))),
+    updateMany: wrapWithMetrics("updateMany", "",
+      applyMiddleware(extensions, "UpdateMany", updateManyMethod(docClient, forgivingConfig))),
+    delete: wrapWithMetrics("delete", "",
+      applyMiddleware(extensions, "Delete", deleteMethod(docClient, forgivingConfig))),
+    deleteMany: wrapWithMetrics("deleteMany", "",
+      applyMiddleware(extensions, "DeleteMany", deleteManyMethod(docClient, forgivingConfig))),
+    consumeOne: wrapWithMetrics("consumeOne", "",
+      applyMiddleware(extensions, "ConsumeOne", consumeOneMethod(docClient, forgivingConfig))),
   };
+
+  /**
+   * Wraps a single method with latency instrumentation.
+   * The model parameter is extracted from args at call time (first arg.model),
+   * but since we don't know the model at construction time, we pass it
+   * through the wrapper — the actual model comes from args.
+   */
+  function wrapWithMetrics(
+    operation: string,
+    _defaultModel: string,
+    fn: Function,
+  ): Function {
+    return (args: any) => measureLatency(metrics, operation, args?.model ?? "unknown", () => fn(args));
+  }
 
   // Late-bound holder for the framework's transformInput/transformOutput.
   // createAdapterFactory invokes our `adapter` callback (below) with these
@@ -104,7 +130,7 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
       // Transaction support (hybrid buffer pattern per DESIGN.md §6)
       transaction: (forgivingConfig.client
         ? createTransactionWrapper(
-            nativeMethods,
+            nativeMethods as any,
             forgivingConfig,
             (model: string) => getTableName(model, forgivingConfig),
             helpersRef,

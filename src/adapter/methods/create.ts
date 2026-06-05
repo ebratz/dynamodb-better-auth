@@ -70,7 +70,11 @@ export function createMethod(
           `Item with ${pkField}="${data[pkField]}" already exists in ${tableName}`,
         );
       }
-      throw err;
+      throw new DynamoAdapterError(
+        "DYNAMODB_ERROR",
+        err.message || "Unexpected DynamoDB error",
+        err,
+      );
     }
   };
 }
