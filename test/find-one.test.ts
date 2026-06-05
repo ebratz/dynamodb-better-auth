@@ -153,4 +153,41 @@ describe("findOne", () => {
 
     expect(result).toBeNull();
   });
+
+  it("Tier 1 client-side filter: matches when extra clause passes", async () => {
+    const docClient = makeDocClient({ Item: { id: "u1", status: "active", email: "a@b.com" } });
+    const config = makeConfig();
+    const findOne = findOneMethod(docClient, config);
+
+    // PK eq + extra field → Tier 1 GetItem with client-side filter
+    const result = await findOne({
+      model: "user",
+      where: [
+        { field: "id", operator: "eq", value: "u1" },
+        { field: "status", operator: "eq", value: "active" },
+      ],
+    });
+
+    // Client-side filter passes: status matches
+    expect(result).toEqual({ id: "u1", status: "active", email: "a@b.com" });
+    expect(docClient.send).toHaveBeenCalled();
+  });
+
+  it("Tier 1 client-side filter: rejects when extra clause fails", async () => {
+    const docClient = makeDocClient({ Item: { id: "u1", status: "inactive", email: "a@b.com" } });
+    const config = makeConfig();
+    const findOne = findOneMethod(docClient, config);
+
+    // PK eq + extra field → Tier 1 GetItem with client-side filter
+    const result = await findOne({
+      model: "user",
+      where: [
+        { field: "id", operator: "eq", value: "u1" },
+        { field: "status", operator: "eq", value: "active" },
+      ],
+    });
+
+    // Client-side filter fails: status is inactive, not active
+    expect(result).toBeNull();
+  });
 });

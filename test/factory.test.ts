@@ -229,4 +229,51 @@ describe("dynamodbAdapter — transform lambdas", () => {
     // it through getTableName.
     expect(getTableName("user", baseConfig)).toBe("test-users");
   });
+
+  it("forgiving tables Proxy: unknown model name becomes its own table name", () => {
+    // The Proxy fallback means any model not in config.tables uses its name as
+    // the DynamoDB table. This test verifies that dynamodbAdapter does NOT throw
+    // when a plugin model has no explicit table mapping.
+    const config: DynamoDBAdapterConfig = {
+      ...baseConfig,
+      tables: {
+        // intentionally omitting "organization" — Proxy should use "organization" as table name
+        user: "test-users",
+        session: "test-sessions",
+        account: "test-accounts",
+        verification: "test-verifications",
+      },
+    };
+    // Should not throw — Proxy resolves unknown models to their name.
+    expect(() => dynamodbAdapter(config)).not.toThrow();
+  });
+
+  it("adapter() accepts helpers and returns native methods bag", () => {
+    dynamodbAdapter(baseConfig);
+    const adapterFn = capturedFactoryArg.adapter;
+    const methods = adapterFn({
+      transformInput: vi.fn(),
+      transformOutput: vi.fn(),
+      getDefaultModelName: vi.fn().mockReturnValue("user"),
+    });
+    // Should still return all 9 methods even when helpers are provided
+    expect(typeof methods.create).toBe("function");
+    expect(typeof methods.findOne).toBe("function");
+    expect(typeof methods.findMany).toBe("function");
+    expect(typeof methods.count).toBe("function");
+    expect(typeof methods.update).toBe("function");
+    expect(typeof methods.updateMany).toBe("function");
+    expect(typeof methods.delete).toBe("function");
+    expect(typeof methods.deleteMany).toBe("function");
+    expect(typeof methods.consumeOne).toBe("function");
+  });
+
+  it("adapter() with incomplete helpers still returns methods (no crash)", () => {
+    dynamodbAdapter(baseConfig);
+    const adapterFn = capturedFactoryArg.adapter;
+    // Pass helpers without transformInput — should still work (helpersRef.current stays null)
+    const methods = adapterFn({});
+    expect(typeof methods.create).toBe("function");
+    expect(typeof methods.consumeOne).toBe("function");
+  });
 });

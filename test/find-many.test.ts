@@ -5,6 +5,7 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
+  GetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "GetCommand" })),
   QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
   ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
   BatchGetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchGetCommand" })),
@@ -379,6 +380,75 @@ describe("findMany", () => {
   // references the placeholders. better-auth's get-session calls findMany
   // with an empty where, which lands in the Tier-3 Scan path. The Scan
   // must NOT send the two attribute maps.
+  it("Tier 1 GetItem by PK returns single-item array", async () => {
+    const responses: any[] = [];
+    const docClient = {
+      send: vi.fn().mockImplementation(async (cmd: any) => {
+        responses.push(cmd);
+        return { Item: { id: "u1", email: "a@b.com", name: "Alice" } };
+      }),
+    } as any;
+    const config = makeConfig();
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      where: [{ field: "id", operator: "eq", value: "u1" }],
+    });
+
+    expect(result).toEqual([{ id: "u1", email: "a@b.com", name: "Alice" }]);
+    // Should use GetCommand, not Query or Scan
+    const getCommands = responses.filter((c: any) => c?._type === "GetCommand");
+    expect(getCommands.length).toBe(1);
+    expect(getCommands[0].Key).toEqual({ id: "u1" });
+  });
+
+  it("Tier 1 with client-side filter rejects mismatched item", async () => {
+    const docClient = makeDocClient([
+      { Item: { id: "u1", status: "inactive", email: "a@b.com" } },
+    ]);
+    const config = makeConfig();
+    const findMany = findManyMethod(docClient, config);
+
+    // PK eq + extra field → Tier 1 GetItem with client-side filter
+    const result = await findMany({
+      model: "user",
+      where: [
+        { field: "id", operator: "eq", value: "u1" },
+        { field: "status", operator: "eq", value: "active" },
+      ],
+    });
+
+    // Client-side filter fails: status mismatches
+    expect(result).toEqual([]);
+  });
+
+  it("Tier 3 with offset but no sortBy: fetches extra then discards", async () => {
+    const docClient = makeDocClient([
+      { Items: [
+        { id: "u1" }, { id: "u2" }, { id: "u3" },
+        { id: "u4" }, { id: "u5" }, { id: "u6" },
+        { id: "u7" }, { id: "u8" }, { id: "u9" },
+        { id: "u10" },
+      ] },
+    ]);
+    const config = makeConfig();
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      where: [{ field: "name", operator: "ne", value: "" }],
+      offset: 3,
+      limit: 5,
+    });
+
+    // Offset 3: first 3 items discarded (u1,u2,u3)
+    // Limit 5: next 5 returned (u4,u5,u6,u7,u8)
+    expect(result).toHaveLength(5);
+    expect(result[0]!.id).toBe("u4");
+    expect(result[4]!.id).toBe("u8");
+  });
+
   it("Tier 3 Scan with empty where: omits ExpressionAttributeNames/Values entirely", async () => {
     const docClient = makeDocClient([
       { Items: [{ id: "u1" }, { id: "u2" }] },

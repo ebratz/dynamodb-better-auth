@@ -357,6 +357,60 @@ describe("update", () => {
     expect(valKeys.length).toBe(1);
   });
 
+  it("returns null when ConditionalCheckFailedException is thrown (prevents upsert)", async () => {
+    const err: any = new Error("ConditionalCheckFailed");
+    err.name = "ConditionalCheckFailedException";
+
+    const docClient = makeDocClient(async (cmd: any) => {
+      if (cmd._type === "UpdateCommand") throw err;
+      return {};
+    });
+
+    const config = makeConfig();
+    const update = updateMethod(docClient, config);
+
+    const result = await update({
+      model: "user",
+      where: [{ field: "id", operator: "eq", value: "u1" }],
+      update: { name: "New" },
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("converts Date to ISO string in ExpressionAttributeValues", async () => {
+    const calls: any[] = [];
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      return { Attributes: { id: "u1", name: "Bob", updatedAt: "2025-01-01T00:00:00.000Z" } };
+    });
+
+    const config = makeConfig();
+    const update = updateMethod(docClient, config);
+    const testDate = new Date("2025-01-01T00:00:00.000Z");
+
+    await update({
+      model: "user",
+      where: [{ field: "id", operator: "eq", value: "u1" }],
+      update: { name: "Bob", updatedAt: testDate },
+    });
+
+    const vals: any = calls[0].ExpressionAttributeValues;
+    const valRefs = Object.keys(vals);
+    // Should have 2 values (name + updatedAt)
+    expect(valRefs.length).toBe(2);
+    // Find the value that is the ISO string
+    const isoVal = Object.values(vals).find(
+      (v: any) => v === "2025-01-01T00:00:00.000Z",
+    );
+    expect(isoVal).toBe("2025-01-01T00:00:00.000Z");
+    // No Date object should be present
+    const hasDate = Object.values(vals).some(
+      (v: any) => v instanceof Date,
+    );
+    expect(hasDate).toBe(false);
+  });
+
   it("Tier 3 with multiple matches updates the first item only", async () => {
     const calls: any[] = [];
     const user1 = { id: "u1", name: "Alice" };

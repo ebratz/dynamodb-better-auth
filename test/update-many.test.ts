@@ -337,6 +337,119 @@ describe("updateMany", () => {
     warnSpy.mockRestore();
   });
 
+  it("_updateOne skips concurrently deleted item (ConditionalCheckFailed)", async () => {
+    const calls: any[] = [];
+    const sessions = [
+      { token: "tok1", userId: "u1" },
+      { token: "tok2", userId: "u1" },
+      { token: "tok3", userId: "u1" },
+    ];
+
+    let updateCallCount = 0;
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      if (cmd._type === "QueryCommand") {
+        return { Items: sessions };
+      }
+      if (cmd._type === "UpdateCommand") {
+        updateCallCount++;
+        if (updateCallCount === 2) {
+          // Simulate item #2 being deleted between findMany and update
+          const err: any = new Error("ConditionalCheckFailed");
+          err.name = "ConditionalCheckFailedException";
+          throw err;
+        }
+        return { Attributes: {} };
+      }
+      return {};
+    });
+
+    const config = makeConfig({
+      indexes: {
+        session: {
+          userId: { indexName: "userId-index", hashKey: "userId" },
+        },
+      },
+    });
+    const updateMany = updateManyMethod(docClient, config);
+
+    // Should NOT throw — ConditionalCheckFailed is caught per-item
+    const count = await updateMany({
+      model: "session",
+      where: [{ field: "userId", operator: "eq", value: "u1" }],
+      update: { ipAddress: "0.0.0.0" },
+    });
+
+    // 2 of 3 succeeded (the deleted one was skipped)
+    expect(count).toBe(2);
+  });
+
+  it("converts Date to ISO string in UpdateCommand ExpressionAttributeValues", async () => {
+    const calls: any[] = [];
+    const sessions = [{ token: "tok1", userId: "u1" }];
+    const testDate = new Date("2025-06-05T12:00:00.000Z");
+
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      if (cmd._type === "QueryCommand") return { Items: sessions };
+      if (cmd._type === "UpdateCommand") return { Attributes: {} };
+      return {};
+    });
+
+    const config = makeConfig({
+      indexes: {
+        session: {
+          userId: { indexName: "userId-index", hashKey: "userId" },
+        },
+      },
+    });
+    const updateMany = updateManyMethod(docClient, config);
+
+    await updateMany({
+      model: "session",
+      where: [{ field: "userId", operator: "eq", value: "u1" }],
+      update: { ipAddress: "10.0.0.1", refreshedAt: testDate },
+    });
+
+    const updateCall = calls.find((c: any) => c._type === "UpdateCommand");
+    const vals: any = updateCall.ExpressionAttributeValues;
+    const isoVal = Object.values(vals).find(
+      (v: any) => v === "2025-06-05T12:00:00.000Z",
+    );
+    expect(isoVal).toBe("2025-06-05T12:00:00.000Z");
+  });
+
+  it("standard path with empty where scans all items", async () => {
+    const calls: any[] = [];
+    const users = [
+      { id: "u1", name: "Alice", role: "user" },
+      { id: "u2", name: "Bob", role: "user" },
+    ];
+
+    const docClient = makeDocClient(async (cmd: any) => {
+      calls.push(cmd);
+      if (cmd._type === "ScanCommand") return { Items: users };
+      if (cmd._type === "UpdateCommand") return { Attributes: {} };
+      return {};
+    });
+
+    const config = makeConfig();
+    const updateMany = updateManyMethod(docClient, config);
+
+    const count = await updateMany({
+      model: "user",
+      where: [],  // empty where → full table scan
+      update: { role: "member" },
+    });
+
+    expect(count).toBe(2);
+    // First call must be ScanCommand (not QueryCommand)
+    expect(calls[0]._type).toBe("ScanCommand");
+    // Should have 1 scan + 2 updates
+    const updateCalls = calls.filter((c: any) => c._type === "UpdateCommand");
+    expect(updateCalls.length).toBe(2);
+  });
+
   it("unsafeBatchUpdate chunks >25 items across multiple BatchWriteCommands", async () => {
     const calls: any[] = [];
     const users = Array.from({ length: 60 }, (_, i) => ({

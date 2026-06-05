@@ -171,4 +171,47 @@ describe("count", () => {
     const [cmd] = docClient._capture();
     expect(cmd.FilterExpression).toContain("contains");
   });
+
+  it("count with where[not_in] emits NOT IN expression", async () => {
+    const docClient = makeDocClient([{ Count: 3, ScannedCount: 3 }]);
+    const config = makeConfig();
+    const count = countMethod(docClient, config);
+    await count({
+      model: "user",
+      where: [{ field: "role", operator: "not_in", value: ["banned", "deleted"] }],
+    });
+    const [cmd] = docClient._capture();
+    expect(cmd.FilterExpression).toContain("NOT");
+    expect(cmd.FilterExpression).toContain("IN");
+  });
+
+  it("count with where[between] emits BETWEEN expression", async () => {
+    const docClient = makeDocClient([{ Count: 5, ScannedCount: 5 }]);
+    const config = makeConfig();
+    const count = countMethod(docClient, config);
+    await count({
+      model: "user",
+      where: [{ field: "age", operator: "between", value: [18, 65] }],
+    });
+    const [cmd] = docClient._capture();
+    expect(cmd.FilterExpression).toContain("BETWEEN");
+    expect(cmd.FilterExpression).toContain("AND");
+  });
+
+  it("count with mixed AND+OR connectors produces grouped expression", async () => {
+    const docClient = makeDocClient([{ Count: 1, ScannedCount: 1 }]);
+    const config = makeConfig();
+    const count = countMethod(docClient, config);
+    await count({
+      model: "user",
+      where: [
+        { field: "status", operator: "eq", value: "active", connector: "AND" },
+        { field: "role", operator: "eq", value: "admin", connector: "AND" },
+        { field: "role", operator: "eq", value: "mod", connector: "OR" },
+      ],
+    });
+    const [cmd] = docClient._capture();
+    expect(cmd.FilterExpression).toContain("AND");
+    expect(cmd.FilterExpression).toContain("OR");
+  });
 });

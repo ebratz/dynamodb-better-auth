@@ -903,5 +903,107 @@ describe("transaction", () => {
       const txCalls = calls.filter((c: any) => c.TransactItems);
       expect(txCalls.length).toBe(0);
     });
+
+    it("EMAIL_EXISTS thrown on email collision during tx.update email change", async () => {
+      const docClient = makeDocClient(async (_cmd: any) => {
+        const err: any = new Error("Transaction cancelled");
+        err.name = "TransactionCanceledException";
+        err.CancellationReasons = [
+          { Code: "None" },
+          { Code: "None" },
+          { Code: "ConditionalCheckFailed" }, // new email-lookup Put
+        ];
+        throw err;
+      });
+
+      const nativeAdapter = makeNativeAdapter({
+        findOne: vi.fn().mockResolvedValue({
+          id: "u1",
+          email: "old@test.com",
+          name: "Alice",
+        }),
+      });
+
+      const config = makeConfig(docClient, {
+        enableEmailUniqueness: true,
+        tables: {
+          user: "test-users",
+          session: "test-sessions",
+          account: "test-accounts",
+          verification: "test-verifications",
+          emailLookups: "test-email-lookups",
+        },
+      } as any);
+
+      const tx = createTransactionWrapper(nativeAdapter, config, getTable);
+
+      await expect(
+        tx(async (txAdapter) => {
+          await txAdapter.update({
+            model: "user",
+            where: [{ field: "id", operator: "eq", value: "u1" }],
+            update: { email: "taken@test.com" },
+          });
+        }),
+      ).rejects.toThrow(/already registered/);
+    });
+
+    it("tx.updateMany with 99 buffered + 2 found items throws TRANSACTION_FAILED", async () => {
+      const docClient = makeDocClient(async () => ({}));
+
+      const items = [{ id: "a1" }, { id: "a2" }];
+      const nativeAdapter = makeNativeAdapter({
+        findMany: vi.fn().mockResolvedValue(items),
+      });
+
+      const config = makeConfig(docClient);
+      const tx = createTransactionWrapper(nativeAdapter, config, getTable);
+
+      await expect(
+        tx(async (txAdapter) => {
+          // Buffer 99 placeholder items (uses create which pushes 1 each)
+          for (let i = 0; i < 99; i++) {
+            await txAdapter.create({ model: "user", data: { id: `u${i}` } });
+          }
+          // This should find 2 items making total 101
+          await txAdapter.updateMany({
+            model: "user",
+            where: [{ field: "flag", operator: "eq", value: true }],
+            update: { flag: false },
+          });
+        }),
+      ).rejects.toThrow(/more than 100/);
+    });
+
+    it("tx.update with null preState returns update data without merge", async () => {
+      const calls: any[] = [];
+      const docClient = makeDocClient(async (cmd: any) => {
+        calls.push(cmd);
+        return {};
+      });
+
+      // findOne returns null — item doesn't exist
+      const nativeAdapter = makeNativeAdapter({
+        findOne: vi.fn().mockResolvedValue(null),
+      });
+
+      const config = makeConfig(docClient);
+      const tx = createTransactionWrapper(nativeAdapter, config, getTable);
+
+      const result = await tx(async (txAdapter) => {
+        return txAdapter.update({
+          model: "user",
+          where: [{ field: "id", operator: "eq", value: "nonexistent" }],
+          update: { name: "Ghost" },
+        });
+      });
+
+      // Returns the update data without preState fields
+      expect(result).toEqual({ name: "Ghost" });
+      // The item is still buffered for Update (it will fail at flush with ConditionalCheckFailed)
+      expect(calls.length).toBe(1);
+      expect(calls[0].TransactItems[0].Update).toBeDefined();
+      expect(calls[0].TransactItems[0].Update.Key).toEqual({ id: "nonexistent" });
+    });
   });
 });

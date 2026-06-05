@@ -352,4 +352,60 @@ describe("resolveQueryPlan", () => {
     // contains is not a sort-key operator → goes to FilterExpression
     expect(plan.filterExpression).toBeDefined();
   });
+
+  it("Tier 2: key/filter placeholder collision is remapped correctly", () => {
+    // When keyConditionClauses and filterClauses are converted separately,
+    // convertWhereClause assigns #n0, #n1, ... independently for each call.
+    // This causes collisions when merged — the same #nX refers to different
+    // fields in kcNames vs filterNames.
+    //
+    // Scenario:
+    //   GSI: hashKey=email, rangeKey=createdAt
+    //   Key condition (2 fields): email=eq, createdAt=gt → #n0=email, #n1=createdAt
+    //   Filter (1 field): role=admin → #n0=role (fresh start)
+    //
+    // Without remapping, the filter's #n0 would map to "email" in the merged
+    // names map, silently breaking the filter expression. The collision code
+    // (query-planner.ts L209-218) detects this and remaps to #n2.
+    const configWithSortKey = {
+      ...baseConfig,
+      indexes: {
+        ...baseConfig.indexes,
+        user: {
+          ...baseConfig.indexes!.user,
+          email: {
+            indexName: "email-index",
+            hashKey: "email",
+            rangeKey: "createdAt",
+          },
+        },
+      },
+    };
+    const plan = resolveQueryPlan(
+      [
+        { field: "email", operator: "eq", value: "x@y.com" },
+        { field: "createdAt", operator: "gt", value: "2024-01-01" },
+        { field: "role", operator: "eq", value: "admin" },
+      ],
+      "user",
+      configWithSortKey,
+    );
+    expect(plan.tier).toBe(2);
+    expect(plan.indexName).toBe("email-index");
+    // Key condition should reference email and createdAt
+    expect(plan.keyCondition).toContain("#n0 = :v0");
+    expect(plan.keyCondition).toContain("#n1");
+    // Filter expression should use a distinct, non-colliding placeholder.
+    // Without remapping, filter would reuse #n0 (collision → broken).
+    // With remapping, filter gets #n2 (offset = 2 from kcNames).
+    expect(plan.filterExpression).toBeDefined();
+    // The value reference stays :v0 (filter starts its own value namespace)
+    expect(plan.filterExpression).toContain("#n2 = :v0");
+    // Verify the merged names map has all 3 fields with distinct keys
+    const names = plan.expressionAttributeNames;
+    expect(names["#n0"]).toBe("email");
+    expect(names["#n1"]).toBe("createdAt");
+    expect(names["#n2"]).toBe("role");
+    expect(Object.keys(names)).toHaveLength(3);
+  });
 });

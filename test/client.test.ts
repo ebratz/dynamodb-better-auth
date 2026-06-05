@@ -31,6 +31,26 @@ describe("resolveDocClient", () => {
     expect(result).toBe(fakeDocClient);
   });
 
+  it("returns null as-is when passed null", () => {
+    expect(resolveDocClient(null as any)).toBeNull();
+  });
+
+  it("returns undefined as-is when passed undefined", () => {
+    expect(resolveDocClient(undefined as any)).toBeUndefined();
+  });
+
+  it("wraps object with send but no translateConfig via DynamoDBDocumentClient.from", () => {
+    // An object that has .send but NOT translateConfig — should be wrapped, not passed through.
+    const bareSend = { send: vi.fn().mockResolvedValue({}) };
+    const fromSpy = vi.spyOn(DynamoDBDocumentClient, "from").mockReturnValue({} as any);
+    try {
+      const result = resolveDocClient(bareSend as any);
+      expect(fromSpy).toHaveBeenCalled();
+    } finally {
+      fromSpy.mockRestore();
+    }
+  });
+
   it("wrapping applies removeUndefinedValues:true", () => {
     const rawClient = new DynamoDBClient({ region: "us-east-1" });
     const docClient = resolveDocClient(rawClient);
