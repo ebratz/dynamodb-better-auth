@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.3...v0.1.4) (2026-06-05)
+
+
+### Bug Fixes
+
+* commit resolveFilter export needed by update-many refactor ([02cd57f](https://github.com/ebratz/dynamodb-better-auth/commit/02cd57f7d20d75eb6d68b92940749c90db47b4fc))
+
+
+### Refactoring
+
+* centralize query planning in update, update-many, delete ([b69aaed](https://github.com/ebratz/dynamodb-better-auth/commit/b69aaed5d5fa4d3d1e716469bf8dbbd285bf3112))
+
 ## [0.1.3](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.2...v0.1.3) (2026-05-31)
 
 
