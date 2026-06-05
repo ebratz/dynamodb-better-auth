@@ -3,18 +3,19 @@
  *
  * Deletes all items matching the where clause.
  *
- * 1. Resolve plan across three tiers:
- *    - Tier 1: PK equality → GetItem → single-item BatchWrite.
+ * 1. Resolve plan via centralized query-planner:
+ *    - Tier 1: GetItem (PK equality) → single-item BatchWrite.
  *    - Tier 2: GSI Query → paginated fetch → extract keys → BatchWrite.
- *      KEYS_ONLY GSIs: follow-up GetItem per item to resolve full key.
+ *      KEYS_ONLY GSIs: BatchGetCommand in chunks of 100 (not sequential GetItem).
  *    - Tier 3: Scan → paginated fetch → extract keys → BatchWrite.
  * 2. Chunk keys into batches of 25 → BatchWriteCommand with DeleteRequest entries.
- * 3. Retry UnprocessedItems with exponential backoff (max 3 attempts).
+ * 3. Retry UnprocessedItems with exponential backoff + jitter (max 3 attempts).
  * 4. Return total deletedCount.
  */
 
 import {
   BatchWriteCommand,
+  BatchGetCommand,
   GetCommand,
   QueryCommand,
   ScanCommand,
@@ -24,6 +25,8 @@ import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { compactExpr } from "../../helpers/expression-names";
 import { getTableName } from "../client";
+import { resolveQueryPlan } from "../../helpers/query-planner";
+import { DynamoAdapterError } from "../../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -37,11 +40,20 @@ export function deleteManyMethod(
     where?: Where[];
   }): Promise<number> => {
     const { model, where } = args;
+
+    // ── Guard against accidental full-table deletion ─────────
+    if (!where || where.length === 0) {
+      throw new DynamoAdapterError(
+        "INVALID_WHERE",
+        "deleteMany requires a non-empty where clause to prevent accidental full-table deletion.",
+      );
+    }
+
     const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
-    // ── Resolve plan ──────────────────────────────────────────
-    const plan = resolveDeleteManyPlan(where ?? [], model, schema, config);
+    // ── Resolve plan via centralized planner ──────────────────
+    const plan = resolveQueryPlan(where, model, config);
 
     // ── Find all matching items ───────────────────────────────
     const items = await _findItems(docClient, tableName, plan, config, model, schema);
@@ -50,7 +62,7 @@ export function deleteManyMethod(
       return 0;
     }
 
-    // ── Extract keys ──────────────────────────────────────────
+    // ── Extract keys from items ───────────────────────────────
     const keys = items.map((item: Record<string, any>) => {
       const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
       if (schema.skField && item[schema.skField] !== undefined) {
@@ -75,123 +87,21 @@ export function deleteManyMethod(
 
 // ── Internal helpers ───────────────────────────────────────────
 
-interface DeleteManyPlan {
-  operation: "getItem" | "query" | "scan";
-  key?: Record<string, any>;
-  indexName?: string;
-  keyCondition?: string;
-  filterExpression?: string;
-  expressionAttributeNames: Record<string, string>;
-  expressionAttributeValues: Record<string, any>;
-  needsFollowUpGetItem?: boolean;
-}
-
-function resolveDeleteManyPlan(
-  where: Where[],
-  model: string,
-  schema: { pkField: string; skField?: string },
-  config: DynamoDBAdapterConfig,
-): DeleteManyPlan {
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
-
-  const fieldName = (f: string, i: number) => {
-    const nk = `#n${i}`;
-    names[nk] = f;
-    return nk;
-  };
-  const valRef = (v: any, i: number) => {
-    const vk = `:v${i}`;
-    values[vk] = v;
-    return vk;
-  };
-
-  // Tier 1: PK equality (and optional SK for composite)
-  const pkEq = where.filter(
-    (w: Where) =>
-      (!w.operator || w.operator === "eq") &&
-      (!w.connector || w.connector !== "OR"),
-  );
-  const pkMatch = pkEq.find((w: Where) => w.field === schema.pkField);
-  const skMatch = schema.skField
-    ? pkEq.find((w: Where) => w.field === schema.skField)
-    : undefined;
-
-  if (pkMatch && (schema.skField ? skMatch : true)) {
-    const key: Record<string, any> = { [schema.pkField]: pkMatch.value };
-    if (schema.skField && skMatch) {
-      key[schema.skField] = skMatch.value;
-    }
-    return {
-      operation: "getItem",
-      key,
-      expressionAttributeNames: {},
-      expressionAttributeValues: {},
-    };
-  }
-
-  // Tier 2: Check for GSI match
-  const nonOr = where.filter(
-    (w: Where) => !w.connector || w.connector !== "OR",
-  );
-  const modelIndexes = config.indexes?.[model];
-
-  if (modelIndexes && nonOr.length > 0) {
-    for (const w of nonOr) {
-      const gsiDecl = modelIndexes[w.field];
-      if (gsiDecl && (!w.operator || w.operator === "eq")) {
-        const fRef = fieldName(w.field, Object.keys(names).length);
-        const vRef = valRef(w.value, Object.keys(values).length);
-
-        let sortCondition = "";
-        if (gsiDecl.rangeKey) {
-          const skW = nonOr.find(
-            (rw: Where) => rw.field === gsiDecl.rangeKey && rw !== w,
-          );
-          if (skW) {
-            const skRef = fieldName(gsiDecl.rangeKey, Object.keys(names).length);
-            const skValRef = valRef(skW.value, Object.keys(values).length);
-            sortCondition = ` AND ${skRef} = ${skValRef}`;
-          }
-        }
-
-        const rest = nonOr.filter(
-          (rw: Where) => rw !== w && rw.field !== gsiDecl.rangeKey,
-        );
-        const ors = where.filter((rw: Where) => rw.connector === "OR");
-        const extra = [...rest, ...ors];
-        const filter = buildSimpleFilter(extra, fieldName, valRef, names, values);
-
-        return {
-          operation: "query",
-          indexName: gsiDecl.indexName,
-          keyCondition: `${fRef} = ${vRef}${sortCondition}`,
-          ...(filter ? { filterExpression: filter } : {}),
-          expressionAttributeNames: names,
-          expressionAttributeValues: values,
-          needsFollowUpGetItem: gsiDecl.projection === "KEYS_ONLY",
-        };
-      }
-    }
-  }
-
-  // Tier 3: Scan
-  const filter = where.length
-    ? buildSimpleFilter(where, fieldName, valRef, names, values)
-    : undefined;
-
-  return {
-    operation: "scan",
-    ...(filter ? { filterExpression: filter } : {}),
-    expressionAttributeNames: names,
-    expressionAttributeValues: values,
-  };
-}
-
 async function _findItems(
   docClient: DynamoDBDocumentClient,
   tableName: string,
-  plan: DeleteManyPlan,
+  plan: {
+    tier: number;
+    operation: string;
+    key?: Record<string, any>;
+    indexName?: string;
+    keyCondition?: string;
+    filterExpression?: string;
+    expressionAttributeNames: Record<string, string>;
+    expressionAttributeValues: Record<string, any>;
+    needsFollowUpGetItem?: boolean;
+    followUpKeyFields?: { pkField: string; skField?: string };
+  },
   config: DynamoDBAdapterConfig,
   model: string,
   schema: { pkField: string; skField?: string },
@@ -228,22 +138,14 @@ async function _findItems(
       lastEvaluatedKey = result.LastEvaluatedKey;
     } while (lastEvaluatedKey);
 
-    // Follow-up GetItem for KEYS_ONLY GSIs
+    // Follow-up BatchGetItem for KEYS_ONLY GSIs (chunked by 100)
     if (plan.needsFollowUpGetItem && items.length > 0) {
-      const fullItems: Record<string, any>[] = [];
-      for (const gsiItem of items) {
-        const key: Record<string, any> = { [schema.pkField]: gsiItem[schema.pkField] };
-        if (schema.skField && gsiItem[schema.skField] !== undefined) {
-          key[schema.skField] = gsiItem[schema.skField];
-        }
-        const fuResult = await docClient.send(
-          new GetCommand({ TableName: tableName, Key: key }),
-        );
-        if (fuResult.Item) {
-          fullItems.push(fuResult.Item as any);
-        }
-      }
-      return fullItems;
+      return _resolveKEYS_ONLY(
+        docClient,
+        tableName,
+        plan.followUpKeyFields ?? { pkField: schema.pkField, skField: schema.skField },
+        items,
+      );
     }
 
     return items;
@@ -280,6 +182,64 @@ async function _findItems(
   return items;
 }
 
+/**
+ * Resolves full items from a KEYS_ONLY GSI via BatchGetCommand,
+ * chunked into batches of 100 (DynamoDB BatchGetItem limit).
+ */
+async function _resolveKEYS_ONLY(
+  docClient: DynamoDBDocumentClient,
+  tableName: string,
+  followUpKeyFields: { pkField: string; skField?: string },
+  gsiItems: Record<string, any>[],
+): Promise<Record<string, any>[]> {
+  // Build keys from GSI items
+  const keys = gsiItems.map((item) => {
+    const key: Record<string, any> = { [followUpKeyFields.pkField]: item[followUpKeyFields.pkField] };
+    if (followUpKeyFields.skField && item[followUpKeyFields.skField] !== undefined) {
+      key[followUpKeyFields.skField] = item[followUpKeyFields.skField];
+    }
+    return key;
+  });
+
+  const fullItems: Record<string, any>[] = [];
+  const BATCH_SIZE = 100;
+
+  for (let i = 0; i < keys.length; i += BATCH_SIZE) {
+    const chunk = keys.slice(i, i + BATCH_SIZE);
+    let retries = 0;
+    let unprocessed = chunk;
+    let batchResults: Record<string, any>[] = [];
+
+    while (unprocessed.length > 0 && retries < 3) {
+      const result = await docClient.send(
+        new BatchGetCommand({
+          RequestItems: {
+            [tableName]: { Keys: unprocessed },
+          },
+        }),
+      );
+
+      const responses = (result.Responses as any)?.[tableName];
+      if (responses) batchResults.push(...responses);
+
+      const nextUnprocessed = (result.UnprocessedKeys as any)?.[tableName]?.Keys;
+      if (!nextUnprocessed || nextUnprocessed.length === 0) break;
+
+      unprocessed = nextUnprocessed;
+      retries++;
+      if (retries < 3) {
+        await new Promise((r) =>
+          setTimeout(r, Math.pow(2, retries - 1) * 100 + Math.random() * 50),
+        );
+      }
+    }
+
+    fullItems.push(...batchResults);
+  }
+
+  return fullItems;
+}
+
 async function _batchDeleteWithRetry(
   docClient: DynamoDBDocumentClient,
   tableName: string,
@@ -305,9 +265,9 @@ async function _batchDeleteWithRetry(
     const unprocessedKeys = unprocessed.map(
       (u: any) => u.DeleteRequest!.Key,
     );
-    // Exponential backoff: 100ms, 200ms, 400ms
+    // Exponential backoff with jitter: 100ms / 200ms / 400ms + random 0-50ms
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.pow(2, attempt - 1) * 100),
+      setTimeout(resolve, Math.pow(2, attempt - 1) * 100 + Math.random() * 50),
     );
     const retryDeleted = await _batchDeleteWithRetry(
       docClient,
@@ -322,50 +282,4 @@ async function _batchDeleteWithRetry(
   }
 
   return deletedCount;
-}
-
-function buildSimpleFilter(
-  where: Where[],
-  fieldName: (f: string, i: number) => string,
-  valRef: (v: any, i: number) => string,
-  names: Record<string, string>,
-  values: Record<string, any>,
-): string {
-  if (where.length === 0) return "";
-
-  const parts: string[] = [];
-
-  for (const w of where) {
-    const fRef = fieldName(w.field, Object.keys(names).length);
-    if (w.operator === "in" && Array.isArray(w.value)) {
-      const refs = w.value.map((v: any) => valRef(v, Object.keys(values).length));
-      parts.push(`${fRef} IN (${refs.join(", ")})`);
-    } else if (w.operator === "gt")
-      parts.push(`${fRef} > ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "gte")
-      parts.push(`${fRef} >= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lt")
-      parts.push(`${fRef} < ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lte")
-      parts.push(`${fRef} <= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "ne")
-      parts.push(`${fRef} <> ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "starts_with")
-      parts.push(`begins_with(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else if (w.operator === "contains")
-      parts.push(`contains(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else
-      parts.push(`${fRef} = ${valRef(w.value, Object.keys(values).length)}`);
-  }
-
-  const andW = where.filter((w: Where) => !w.connector || w.connector !== "OR");
-  const orW = where.filter((w: Where) => w.connector === "OR");
-
-  if (andW.length && orW.length) {
-    const andPart = parts.slice(0, andW.length).join(" AND ");
-    const orPart = parts.slice(andW.length).join(" OR ");
-    return `(${andPart}) AND (${orPart})`;
-  }
-  if (orW.length) return parts.join(" OR ");
-  return parts.join(" AND ");
 }

@@ -22,8 +22,10 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, KeySchema } from "../types";
 import { getKeySchema } from "../helpers/key-builder";
 import { buildExpressionNames } from "../helpers/expression-names";
+import { generateToken } from "../helpers/uuid";
 import { DynamoAdapterError } from "../errors";
 import { resolveDocClient } from "./client";
+import { buildEmailUniquenessActions } from "../email-uniqueness";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -148,7 +150,6 @@ export function createTransactionWrapper(
         // If enableEmailUniqueness and model is "user", buffer email-lookup too
         if (config.enableEmailUniqueness && model === "user" && item.email) {
           hasEmailUniqueness = true;
-          const emailLower = (item.email as string).toLowerCase();
 
           // User put
           writeBuffer.push({
@@ -160,25 +161,11 @@ export function createTransactionWrapper(
             },
           });
 
-          // Email-lookup put
-          const emailTable = config.tables.emailLookups;
-          if (!emailTable) {
-            throw new DynamoAdapterError(
-              "MISSING_TABLE",
-              "enableEmailUniqueness requires tables.emailLookups to be configured",
-            );
+          // Email-lookup actions via buildEmailUniquenessActions
+          const emailActions = buildEmailUniquenessActions("create", config, { data: item });
+          for (const action of emailActions) {
+            writeBuffer.push(action);
           }
-          writeBuffer.push({
-            Put: {
-              TableName: emailTable,
-              Item: {
-                email: emailLower,
-                userId: item.id,
-              },
-              ConditionExpression: "attribute_not_exists(#pk)",
-              ExpressionAttributeNames: { "#pk": "email" },
-            },
-          });
         } else {
           writeBuffer.push({
             Put: {
@@ -234,17 +221,6 @@ export function createTransactionWrapper(
           preState
         ) {
           hasEmailUniqueness = true;
-          const oldEmailLower = (preState.email as string)?.toLowerCase();
-          const newEmailLower = (update.email as string).toLowerCase();
-          const userId = preState.id as string;
-          const emailTable = config.tables.emailLookups;
-
-          if (!emailTable) {
-            throw new DynamoAdapterError(
-              "MISSING_TABLE",
-              "enableEmailUniqueness requires tables.emailLookups to be configured",
-            );
-          }
 
           // Build user Update
           const { names, toRef } = buildExpressionNames(
@@ -274,33 +250,21 @@ export function createTransactionWrapper(
               TableName: tableName,
               Key: key,
               UpdateExpression: `SET ${setClauses.join(", ")}`,
-              ExpressionAttributeNames: names,
+              ExpressionAttributeNames: { ...names, "#pk": schema.pkField },
               ExpressionAttributeValues: values,
+              ConditionExpression: "attribute_exists(#pk)",
             },
           });
 
-          // Delete old email-lookup
-          if (oldEmailLower) {
-            writeBuffer.push({
-              Delete: {
-                TableName: emailTable,
-                Key: { email: oldEmailLower },
-              },
-            });
+          // Email-lookup actions via buildEmailUniquenessActions
+          const emailActions = buildEmailUniquenessActions("updateEmail", config, {
+            user: preState,
+            oldEmail: preState.email as string,
+            newEmail: update.email,
+          });
+          for (const action of emailActions) {
+            writeBuffer.push(action);
           }
-
-          // Put new email-lookup
-          writeBuffer.push({
-            Put: {
-              TableName: emailTable,
-              Item: {
-                email: newEmailLower,
-                userId,
-              },
-              ConditionExpression: "attribute_not_exists(#pk)",
-              ExpressionAttributeNames: { "#pk": "email" },
-            },
-          });
 
           return preState ? { ...preState, ...update } : { ...update };
         }
@@ -326,8 +290,9 @@ export function createTransactionWrapper(
             TableName: tableName,
             Key: key,
             UpdateExpression: `SET ${setClauses.join(", ")}`,
-            ExpressionAttributeNames: names,
+            ExpressionAttributeNames: { ...names, "#pk": schema.pkField },
             ExpressionAttributeValues: values,
+            ConditionExpression: "attribute_exists(#pk)",
           },
         });
 
@@ -368,9 +333,6 @@ export function createTransactionWrapper(
         }
 
         const { names, toRef } = buildExpressionNames(Object.keys(update));
-
-        const setClauses: string[] = [];
-        const values: Record<string, any>[] = [];
 
         // Each item gets its own Update expression with its own values
         for (const item of items) {
@@ -431,21 +393,9 @@ export function createTransactionWrapper(
           hasEmailUniqueness = true;
           // We need to read the user to get the email
           const user = await nativeAdapter.findOne({ model, where });
-          if (user?.email) {
-            const emailTable = config.tables.emailLookups;
-            if (!emailTable) {
-              throw new DynamoAdapterError(
-                "MISSING_TABLE",
-                "enableEmailUniqueness requires tables.emailLookups to be configured",
-              );
-            }
-            const emailLower = (user.email as string).toLowerCase();
-            writeBuffer.push({
-              Delete: {
-                TableName: emailTable,
-                Key: { email: emailLower },
-              },
-            });
+          const emailActions = buildEmailUniquenessActions("delete", config, { user: user ?? undefined });
+          for (const action of emailActions) {
+            writeBuffer.push(action);
           }
         }
       },
@@ -453,6 +403,8 @@ export function createTransactionWrapper(
       // ── deleteMany ───────────────────────────────────────
       deleteMany: async (args: { model: string; where: Where[] }) => {
         const { model, where } = args;
+        if (!where || where.length === 0) return 0;
+
         const tableName = getTable(model);
         const schema = getKeySchema(model, config);
 
@@ -511,6 +463,26 @@ export function createTransactionWrapper(
         const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
         if (schema.skField && item[schema.skField] !== undefined) {
           key[schema.skField] = item[schema.skField];
+        }
+
+        // Release email-lookup on consumeOne
+        if (config.enableEmailUniqueness && model === "user") {
+          hasEmailUniqueness = true;
+          if (item?.email) {
+            const emailTable = config.tables.emailLookups;
+            if (!emailTable) {
+              throw new DynamoAdapterError(
+                "MISSING_TABLE",
+                "enableEmailUniqueness requires tables.emailLookups to be configured",
+              );
+            }
+            writeBuffer.push({
+              Delete: {
+                TableName: emailTable,
+                Key: { email: (item.email as string).toLowerCase() },
+              },
+            });
+          }
         }
 
         // Buffer conditional Delete — ensures item still exists at commit
@@ -622,28 +594,4 @@ function buildTxKey(
   return key;
 }
 
-// ── Token generator for idempotency ───────────────────────────
 
-let _crypto: any;
-function generateToken(): string {
-  if (!_crypto) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      _crypto = require("crypto");
-    } catch {
-      _crypto = {
-        randomUUID() {
-          return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
-            /[xy]/g,
-            (c: string) => {
-              const r = (Math.random() * 16) | 0;
-              const v = c === "x" ? r : (r & 0x3) | 0x8;
-              return v.toString(16);
-            },
-          );
-        },
-      };
-    }
-  }
-  return _crypto.randomUUID();
-}

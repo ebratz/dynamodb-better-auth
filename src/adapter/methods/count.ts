@@ -2,21 +2,24 @@
  * count method — per DESIGN.md §5 (count method).
  *
  * Paginated ScanCommand with Select: "COUNT".
+ * Uses the centralized resolveFilter to build DynamoDB expressions,
+ * which correctly handles all operators (not_in, between, contains, etc.)
+ * and AND/OR grouping.
+ *
  * Emits a debugLogs warning when ScannedCount > config.warnOnLargeCount.
  */
 
-import {
-  ScanCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { ScanCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
+import { resolveFilter } from "../../helpers/query-planner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
 
 export function countMethod(
   docClient: DynamoDBDocumentClient,
-  config: DynamoDBAdapterConfig
+  config: DynamoDBAdapterConfig,
 ) {
   return async (args: {
     model: string;
@@ -32,25 +35,25 @@ export function countMethod(
     let totalScanned = 0;
     let lastEvaluatedKey: Record<string, any> | undefined;
 
-    // Build FilterExpression from where clause (placeholder — real impl from H3)
-    const filterExpr = args.where?.length
-      ? buildSimpleFilter(args.where)
-      : undefined;
+    // ── Build filter via centralized converter ──────────────────
+    // resolveFilter handles: not_in, between, contains, starts_with,
+    // AND/OR grouping, IN chunking (>100 values), UnsupportedOperatorError.
+    const filter = resolveFilter(args.where ?? [], args.model, config);
 
     do {
       const result = await docClient.send(
         new ScanCommand({
           TableName: tableName,
           Select: "COUNT",
-          ...(filterExpr?.expression
+          ...(filter
             ? {
-                FilterExpression: filterExpr.expression,
-                ExpressionAttributeNames: filterExpr.names,
-                ExpressionAttributeValues: filterExpr.values,
+                FilterExpression: filter.expression,
+                ExpressionAttributeNames: filter.expressionAttributeNames,
+                ExpressionAttributeValues: filter.expressionAttributeValues,
               }
             : {}),
           ExclusiveStartKey: lastEvaluatedKey,
-        })
+        }),
       );
 
       totalCount += result.Count ?? 0;
@@ -65,63 +68,11 @@ export function countMethod(
       if (logCount) {
         console.warn(
           `[dynamodb-adapter] count() scanned ${totalScanned} items on ${tableName} ` +
-          `(threshold: ${threshold}). Consider adding a counter pattern for large tables.`
+          `(threshold: ${threshold}). Consider adding a counter pattern for large tables.`,
         );
       }
     }
 
     return totalCount;
-  };
-}
-
-/** Minimal filter builder — will be replaced by H3's convertWhereClause */
-function buildSimpleFilter(where: Where[]): {
-  expression: string;
-  names: Record<string, string>;
-  values: Record<string, any>;
-} | undefined {
-  if (!where.length) return undefined;
-
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
-  const parts: string[] = [];
-
-  let vi = 0;
-  for (let i = 0; i < where.length; i++) {
-    const w = where[i]!;
-    const nk = `#n${i}`;
-    names[nk] = w.field;
-
-    const vRef = `:v${vi++}`;
-    values[vRef] = w.value;
-
-    if (w.operator === "gt")      parts.push(`${nk} > ${vRef}`);
-    else if (w.operator === "gte") parts.push(`${nk} >= ${vRef}`);
-    else if (w.operator === "lt")  parts.push(`${nk} < ${vRef}`);
-    else if (w.operator === "lte") parts.push(`${nk} <= ${vRef}`);
-    else if (w.operator === "ne")  parts.push(`${nk} <> ${vRef}`);
-    else if (w.operator === "in") {
-      // Simple IN — real impl (H3) handles chunking
-      const vals = Array.isArray(w.value) ? w.value : [w.value];
-      const inRefs = vals.map((_v: any, j: number) => {
-        const ref = `:v${vi + j}`;
-        values[ref] = vals[j];
-        return ref;
-      });
-      vi += vals.length;
-      parts.push(`${nk} IN (${inRefs.join(", ")})`);
-    } else if (w.operator === "starts_with") {
-      parts.push(`begins_with(${nk}, ${vRef})`);
-    } else if (w.operator === "contains") {
-      parts.push(`contains(${nk}, ${vRef})`);
-    } else {
-      parts.push(`${nk} = ${vRef}`);
-    }
-  }
-
-  return {
-    expression: parts.join(" AND "),
-    names,
-    values,
   };
 }

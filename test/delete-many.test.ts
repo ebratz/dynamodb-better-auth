@@ -8,6 +8,10 @@ vi.mock("@aws-sdk/lib-dynamodb", () => ({
     ...input,
     _type: "BatchWriteCommand",
   })),
+  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({
+    ...input,
+    _type: "BatchGetCommand",
+  })),
   GetCommand: vi.fn().mockImplementation((input: any) => ({
     ...input,
     _type: "GetCommand",
@@ -191,12 +195,16 @@ describe("deleteMany", () => {
         return { Items: gsiItems };
       }
 
-      if (cmd._type === "GetCommand") {
-        const key = (cmd as any).Key;
-        const fullItem = fullItems.find(
-          (f) => f.providerId === key.providerId && f.accountId === key.accountId,
-        );
-        return { Item: fullItem ?? null };
+      if (cmd._type === "BatchGetCommand") {
+        const keys = (cmd as any).RequestItems["test-accounts"].Keys;
+        const items = keys
+          .map((k: any) =>
+            fullItems.find(
+              (f) => f.providerId === k.providerId && f.accountId === k.accountId,
+            ),
+          )
+          .filter(Boolean);
+        return { Responses: { "test-accounts": items }, UnprocessedKeys: {} };
       }
 
       if (cmd._type === "BatchWriteCommand") {
@@ -224,9 +232,9 @@ describe("deleteMany", () => {
       where: [{ field: "id", operator: "eq", value: "acc1" }],
     });
 
-    // Follow-up GetItem calls should have been made for KEYS_ONLY projection
-    const getCalls = calls.filter((c: any) => c._type === "GetCommand");
-    expect(getCalls.length).toBe(2);
+    // Follow-up BatchGetCommand should have been made for KEYS_ONLY projection
+    const batchGetCalls = calls.filter((c: any) => c._type === "BatchGetCommand");
+    expect(batchGetCalls.length).toBe(1);
 
     // BatchWrite should use composite keys (providerId + accountId)
     const batchCalls = calls.filter((c: any) => c._type === "BatchWriteCommand");
@@ -243,6 +251,16 @@ describe("deleteMany", () => {
     });
 
     expect(result).toBe(2);
+  });
+
+  it("throws when where is an empty array", async () => {
+    const docClient = makeDocClient(async () => ({}));
+    const config = makeConfig();
+    const deleteMany = deleteManyMethod(docClient, config);
+
+    await expect(
+      deleteMany({ model: "user", where: [] }),
+    ).rejects.toThrow(/empty where/);
   });
 
   it("returns 0 when no matching items found", async () => {

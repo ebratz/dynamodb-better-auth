@@ -782,7 +782,25 @@ On-demand pricing is roughly $1.25 per million reads and $1.25 per million write
 
 ---
 
-## Limitations
+## Limitations & Edge Cases
+
+### Supported operators
+
+When converting a `where` clause, the following operators map to DynamoDB expressions:
+
+| Operator | DynamoDB expression |
+|---|---|
+| `eq` | `#field = :val` |
+| `ne` | `#field <> :val` |
+| `gt` | `#field > :val` |
+| `gte` | `#field >= :val` |
+| `lt` | `#field < :val` |
+| `lte` | `#field <= :val` |
+| `in` | `#field IN (:v0, …)` (auto-chunked at 100) |
+| `not_in` | `NOT (#field IN (:v0, …))` |
+| `contains` | `contains(#field, :val)` |
+| `starts_with` | `begins_with(#field, :prefix)` |
+| `between` | `#field BETWEEN :lo AND :hi` |
 
 ### Unsupported operators
 
@@ -807,9 +825,21 @@ When a Scan (Tier 3) is combined with `sortBy`, the adapter must fetch **all** m
 
 Default `updateMany` runs N parallel `UpdateItem` calls — they are not atomic with each other. Partial failure surfaces as an `AggregateError` whose `.errors` lists the per-item failures; successful updates remain committed. Wrap in `transaction()` if all-or-nothing is required.
 
-### Item size
+### `where: []` rejected on deleteMany / consumeOne
 
-DynamoDB items are capped at 400 KB. Auth items (user, session, account, verification) are typically < 1 KB. Plugins adding large blob fields may approach the limit.
+To prevent accidental full-table operations, `deleteMany` and `consumeOne` reject an empty `where` array (or `undefined` where) with a `DynamoAdapterError` (`code: "INVALID_WHERE"`). `findMany` and `count` still accept empty where clauses since reads are non-destructive.
+
+### PK/SK fields silently stripped from update payloads
+
+DynamoDB does not allow modifying key attributes via `UpdateItem`. The adapter silently strips the partition key and sort key fields from the `update` data before building the `SET` expression. Attempting to `update({ model: "user", where: …, update: { id: "new-id", name: "Bob" } })` will update only `name` — the `id` change is discarded.
+
+### `findMany` with `limit: 0` short-circuits
+
+Calling `findMany` with `limit: 0` returns an empty array immediately without any DynamoDB call. This is a deliberate optimization — no RCU consumed.
+
+### Item size — no guard in adapter
+
+DynamoDB items are capped at 400 KB. Auth items (user, session, account, verification) are typically < 1 KB. Plugins adding large blob fields may approach the limit. **The adapter does not validate item size** before writing; DynamoDB will reject writes exceeding 400 KB with a `ValidationException`. Applications are responsible for staying under the limit.
 
 ### IN clause
 

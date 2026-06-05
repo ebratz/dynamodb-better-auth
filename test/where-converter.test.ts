@@ -112,6 +112,32 @@ describe("convertWhereClause", () => {
     expect(result.chunked).toBe(true);
   });
 
+  // ── between ──────────────────────────────────────────────────
+  it("between operator with two values", () => {
+    const result = conv([{ field: "age", operator: "between", value: [18, 65] }]);
+    expect(result.expression).toBe("#n0 BETWEEN :v0 AND :v1");
+    expect(result.expressionAttributeValues[":v0"]).toBe(18);
+    expect(result.expressionAttributeValues[":v1"]).toBe(65);
+  });
+
+  it("between throws when value is not a 2-element array", () => {
+    expect(() =>
+      conv([{ field: "age", operator: "between", value: [18] }]),
+    ).toThrow(/requires exactly 2 values/);
+  });
+
+  it("between throws when value is a 3-element array", () => {
+    expect(() =>
+      conv([{ field: "age", operator: "between", value: [10, 20, 30] }]),
+    ).toThrow(/requires exactly 2 values/);
+  });
+
+  it("between throws when value is a single non-array value", () => {
+    expect(() =>
+      conv([{ field: "age", operator: "between", value: 42 as any }]),
+    ).toThrow(/requires exactly 2 values/);
+  });
+
   // ── contains / starts_with ───────────────────────────────────
   it("contains operator", () => {
     const result = conv([{ field: "name", operator: "contains", value: "john" }]);

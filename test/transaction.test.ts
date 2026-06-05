@@ -639,6 +639,49 @@ describe("transaction", () => {
       expect(calls[0].TransactItems[1].Delete.TableName).toBe("test-email-lookups");
       expect(calls[0].TransactItems[1].Delete.Key).toEqual({ email: "alice@test.com" });
     });
+
+    it("tx.consumeOne(user) with enableEmailUniqueness releases email", async () => {
+      const calls: any[] = [];
+      const docClient = makeDocClient(async (cmd: any) => {
+        calls.push(cmd);
+        return {};
+      });
+
+      const nativeAdapter = makeNativeAdapter({
+        findOne: vi.fn().mockResolvedValue({
+          id: "u1",
+          email: "bob@test.com",
+          name: "Bob",
+        }),
+      });
+
+      const config = makeConfig(docClient, {
+        enableEmailUniqueness: true,
+        tables: {
+          user: "test-users",
+          session: "test-sessions",
+          account: "test-accounts",
+          verification: "test-verifications",
+          emailLookups: "test-email-lookups",
+        },
+      } as any);
+
+      const tx = createTransactionWrapper(nativeAdapter, config, getTable);
+
+      await tx(async (txAdapter) => {
+        await txAdapter.consumeOne({
+          model: "user",
+          where: [{ field: "id", operator: "eq", value: "u1" }],
+        });
+      });
+
+      // Should have 2 items: email-lookup Delete + user conditional Delete
+      expect(calls[0].TransactItems.length).toBe(2);
+      expect(calls[0].TransactItems[0].Delete.TableName).toBe("test-email-lookups");
+      expect(calls[0].TransactItems[0].Delete.Key).toEqual({ email: "bob@test.com" });
+      expect(calls[0].TransactItems[1].Delete.TableName).toBe("test-users");
+      expect(calls[0].TransactItems[1].Delete.ConditionExpression).toContain("attribute_exists");
+    });
   });
 
   describe("composite key operations", () => {

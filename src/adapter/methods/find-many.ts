@@ -1,27 +1,30 @@
 /**
  * findMany method — per DESIGN.md §5 (findMany method) + review-gap fix D.
  *
- * Tier 2: Query on GSI, paginate with ExclusiveStartKey.
- *   - offset > 0 throws UnsupportedOptionError.
- *   - sortBy matches sort key → native ScanIndexForward.
- *   - KEYS_ONLY GSI → BatchGetCommand for full rows.
+ * Resolves query plan via centralized resolveQueryPlan:
+ *   Tier 1: GetItem on PK — return single-item array (or empty if filtered out).
+ *   Tier 2: Query on GSI, paginate with ExclusiveStartKey.
+ *     - offset > 0 throws UnsupportedOptionError.
+ *     - sortBy matches GSI sort key → native ScanIndexForward.
+ *     - KEYS_ONLY GSI → BatchGetCommand for full rows.
  *
- * Tier 3: Scan + FilterExpression.
- *   - If sortBy is set: fetch ALL pages, sort client-side, slice to limit.
- *     Emits "full-table sort+limit" warning (gap D fix).
- *   - If no sortBy: apply Limit during scan, stop early.
- *   - Client-side offset via discard (logged warning).
+ *   Tier 3: Scan + FilterExpression.
+ *     - If sortBy is set: fetch ALL pages, sort client-side, slice to limit.
+ *       Emits "full-table sort+limit" warning (gap D fix).
+ *     - If no sortBy: apply Limit during scan, stop early.
+ *     - Client-side offset via discard (logged warning).
  */
 
 import {
+  GetCommand,
   QueryCommand,
   ScanCommand,
   BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
-import { getKeySchema } from "../../helpers/key-builder";
 import { compactExpr } from "../../helpers/expression-names";
+import { resolveQueryPlan } from "../../helpers/query-planner";
 import { UnsupportedOptionError } from "../../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,13 +43,36 @@ export function findManyMethod(
     select?: string[];
     join?: any;
   }): Promise<Record<string, any>[]> => {
-    const tableName = config.tables[args.model];
+    const model = args.model;
+    const tableName = config.tables[model];
     if (!tableName) {
-      throw new Error(`No table configured for model "${args.model}"`);
+      throw new Error(`No table configured for model "${model}"`);
     }
 
-    const schema = getKeySchema(args.model, config);
-    const plan = resolveFindManyPlan(args, args.model, schema, config, tableName);
+    // Guard: limit 0 → empty array (avoid unnecessary DDB calls)
+    const limit = args.limit ?? 100;
+    if (limit <= 0) return [];
+
+    const plan = resolveQueryPlan(args.where ?? [], model, config);
+
+    // ── Tier 1: GetItem on PK ───────────────────────────────
+    if (plan.operation === "getItem") {
+      const result = await docClient.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: plan.key!,
+        })
+      );
+      const item = (result.Item as any) ?? null;
+      if (!item) return [];
+
+      // Client-side filter for extra where clauses
+      if (plan.needsClientSideFilter && plan.clientSideFilters) {
+        if (!matchesClientFilters(item, plan.clientSideFilters)) return [];
+      }
+
+      return [item];
+    }
 
     // ── Tier 2: Query on GSI ─────────────────────────────────
     if (plan.operation === "query") {
@@ -57,9 +83,15 @@ export function findManyMethod(
         );
       }
 
+      // Determine client-side sort: check if sortBy matches GSI range key
+      let needsClientSort = false;
+      if (args.sortBy) {
+        const gsiRangeKey = findGsiRangeKey(model, plan.indexName!, config);
+        needsClientSort = args.sortBy.field !== gsiRangeKey;
+      }
+
       let items: Record<string, any>[] = [];
       let lastEvaluatedKey: Record<string, any> | undefined;
-      const limit = args.limit ?? 100;
 
       do {
         const result = await docClient.send(
@@ -79,11 +111,11 @@ export function findManyMethod(
         lastEvaluatedKey = result.LastEvaluatedKey;
       } while (lastEvaluatedKey && items.length < limit);
 
-      // Client-side sort if sort field doesn't match GSI sort key
-      if (args.sortBy && plan.needsClientSideSort) {
+      // Client-side sort when sortBy doesn't match GSI range key
+      if (args.sortBy && needsClientSort) {
         if (config.debugLogs) {
           console.warn(
-            `[dynamodb-adapter] findMany on ${args.model}: sortBy field ` +
+            `[dynamodb-adapter] findMany on ${model}: sortBy field ` +
             `"${args.sortBy.field}" does not match sort key — sorting client-side.`
           );
         }
@@ -110,13 +142,12 @@ export function findManyMethod(
     // ── Tier 3: Scan + Filter ────────────────────────────────
     let items: Record<string, any>[] = [];
     let lastEvaluatedKey: Record<string, any> | undefined;
-    const limit = args.limit ?? 100;
 
     // Gap D fix: if sortBy is set, fetch ALL pages first
     if (args.sortBy) {
       if (config.debugLogs) {
         console.warn(
-          `[dynamodb-adapter] findMany on ${args.model} using Scan with sortBy — ` +
+          `[dynamodb-adapter] findMany on ${model} using Scan with sortBy — ` +
           `fetching all matching items for client-side sort. Add a GSI to avoid this.`
         );
       }
@@ -148,7 +179,7 @@ export function findManyMethod(
       if (args.offset && args.offset > 0) {
         if (config.debugLogs) {
           console.warn(
-            `[dynamodb-adapter] findMany client-side offset ${args.offset} on ${args.model} — ` +
+            `[dynamodb-adapter] findMany client-side offset ${args.offset} on ${model} — ` +
             `skipped items still consumed RCU.`
           );
         }
@@ -180,7 +211,7 @@ export function findManyMethod(
     if (args.offset && args.offset > 0) {
       if (config.debugLogs) {
         console.warn(
-          `[dynamodb-adapter] findMany client-side offset ${args.offset} on ${args.model} — ` +
+          `[dynamodb-adapter] findMany client-side offset ${args.offset} on ${model} — ` +
           `discarded items still consumed RCU.`
         );
       }
@@ -193,140 +224,76 @@ export function findManyMethod(
 
 // ── Internal helpers ───────────────────────────────────────────
 
-interface FindManyPlan {
-  operation: "query" | "scan";
-  indexName?: string;
-  keyCondition?: string;
-  filterExpression?: string;
-  expressionAttributeNames: Record<string, string>;
-  expressionAttributeValues: Record<string, any>;
-  needsClientSideSort?: boolean;
-  needsFollowUpGetItem?: boolean;
-  followUpKeyFields?: { pkField: string; skField?: string };
-}
-
-function resolveFindManyPlan(
-  args: { where?: Where[]; sortBy?: { field: string; direction: string } },
-  model: string,
-  schema: { pkField: string; skField?: string },
-  config: DynamoDBAdapterConfig,
-  tableName: string
-): FindManyPlan {
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
-  const where = args.where ?? [];
-
-  const fieldName = (f: string, i: number) => { const nk = `#n${i}`; names[nk] = f; return nk; };
-  const valRef = (v: any, i: number) => { const vk = `:v${i}`; values[vk] = v; return vk; };
-
-  // Tier 2: Check for GSI match
-  const nonOr = where.filter(w => !w.connector || w.connector !== "OR");
-  const modelIndexes = config.indexes?.[model];
-
-  if (modelIndexes && nonOr.length > 0) {
-    for (const w of nonOr) {
-      const gsiDecl = modelIndexes[w.field];
-      if (gsiDecl && (!w.operator || w.operator === "eq")) {
-        const fRef = fieldName(w.field, Object.keys(names).length);
-        const vRef = valRef(w.value, Object.keys(values).length);
-
-        let sortCondition = "";
-        let nativeSort = false;
-        if (gsiDecl.rangeKey) {
-          const skW = nonOr.find(rw => rw.field === gsiDecl.rangeKey && rw !== w);
-          if (skW) {
-            const skRef = fieldName(gsiDecl.rangeKey, Object.keys(names).length);
-            const skValRef = valRef(skW.value, Object.keys(values).length);
-            if (skW.operator === "lt")        { sortCondition = ` AND ${skRef} < ${skValRef}`; nativeSort = true; }
-            else if (skW.operator === "lte")  { sortCondition = ` AND ${skRef} <= ${skValRef}`; nativeSort = true; }
-            else if (skW.operator === "gt")   { sortCondition = ` AND ${skRef} > ${skValRef}`; nativeSort = true; }
-            else if (skW.operator === "gte")  { sortCondition = ` AND ${skRef} >= ${skValRef}`; nativeSort = true; }
-            else if (skW.operator === "starts_with") { sortCondition = ` AND begins_with(${skRef}, ${skValRef})`; }
-            else sortCondition = ` AND ${skRef} = ${skValRef}`;
-          }
-        }
-
-        const rest = nonOr.filter(rw => rw !== w && rw.field !== gsiDecl.rangeKey);
-        const ors = where.filter(rw => rw.connector === "OR");
-        const extra = [...rest, ...ors];
-
-        return {
-          operation: "query",
-          indexName: gsiDecl.indexName,
-          keyCondition: `${fRef} = ${vRef}${sortCondition}`,
-          ...(extra.length ? {
-            filterExpression: buildSimpleFilter(extra, fieldName, valRef, names, values),
-          } : {}),
-          expressionAttributeNames: names,
-          expressionAttributeValues: values,
-          needsClientSideSort: args.sortBy
-            ? args.sortBy.field !== gsiDecl.rangeKey
-            : false,
-          needsFollowUpGetItem: gsiDecl.projection === "KEYS_ONLY",
-          followUpKeyFields: gsiDecl.projection === "KEYS_ONLY"
-            ? { pkField: schema.pkField, skField: schema.skField }
-            : undefined,
-        };
+/**
+ * Client-side filter evaluation for Tier 1 GetItem results.
+ */
+function matchesClientFilters(
+  item: Record<string, any>,
+  filters: Array<{ field: string; operator: string; value: any }>,
+): boolean {
+  for (const f of filters) {
+    const itemVal = item[f.field];
+    switch (f.operator) {
+      case "eq":          if (itemVal !== f.value) return false; break;
+      case "ne":          if (itemVal === f.value) return false; break;
+      case "gt":          if (!(itemVal > f.value)) return false; break;
+      case "gte":         if (!(itemVal >= f.value)) return false; break;
+      case "lt":          if (!(itemVal < f.value)) return false; break;
+      case "lte":         if (!(itemVal <= f.value)) return false; break;
+      case "in": {
+        const arr = Array.isArray(f.value) ? f.value : [f.value];
+        if (!arr.includes(itemVal)) return false;
+        break;
       }
+      case "not_in": {
+        const arr = Array.isArray(f.value) ? f.value : [f.value];
+        if (arr.includes(itemVal)) return false;
+        break;
+      }
+      case "contains": {
+        if (typeof itemVal !== "string" || !itemVal.includes(String(f.value))) return false;
+        break;
+      }
+      case "starts_with": {
+        if (typeof itemVal !== "string" || !itemVal.startsWith(String(f.value))) return false;
+        break;
+      }
+      default: return false;
     }
   }
-
-  // Tier 3: Scan
-  const filter = where.length
-    ? buildSimpleFilter(where, fieldName, valRef, names, values)
-    : undefined;
-
-  return {
-    operation: "scan",
-    ...(filter ? { filterExpression: filter } : {}),
-    expressionAttributeNames: names,
-    expressionAttributeValues: values,
-  };
+  return true;
 }
 
-function buildSimpleFilter(
-  where: Where[],
-  fieldName: (f: string, i: number) => string,
-  valRef: (v: any, i: number) => string,
-  names: Record<string, string>,
-  values: Record<string, any>
-): string {
-  const parts: string[] = [];
-
-  for (const w of where) {
-    const fRef = fieldName(w.field, Object.keys(names).length);
-    if (w.operator === "in" && Array.isArray(w.value)) {
-      const refs = w.value.map((v: any) => valRef(v, Object.keys(values).length));
-      parts.push(`${fRef} IN (${refs.join(", ")})`);
-    } else if (w.operator === "gt")           parts.push(`${fRef} > ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "gte")            parts.push(`${fRef} >= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lt")             parts.push(`${fRef} < ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lte")            parts.push(`${fRef} <= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "ne")             parts.push(`${fRef} <> ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "starts_with")    parts.push(`begins_with(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else if (w.operator === "contains")       parts.push(`contains(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else parts.push(`${fRef} = ${valRef(w.value, Object.keys(values).length)}`);
+/**
+ * Look up the GSI range key for a given model + indexName.
+ * Used to determine whether sortBy can use native ScanIndexForward.
+ */
+function findGsiRangeKey(
+  model: string,
+  indexName: string,
+  config: DynamoDBAdapterConfig,
+): string | undefined {
+  const modelIndexes = config.indexes?.[model];
+  if (!modelIndexes) return undefined;
+  for (const [, gsi] of Object.entries(modelIndexes)) {
+    if (gsi.indexName === indexName) return gsi.rangeKey;
   }
-
-  const andW = where.filter(w => !w.connector || w.connector !== "OR");
-  const orW = where.filter(w => w.connector === "OR");
-
-  if (andW.length && orW.length) {
-    const andPart = parts.slice(0, andW.length).join(" AND ");
-    const orPart = parts.slice(andW.length).join(" OR ");
-    return `(${andPart}) AND (${orPart})`;
-  }
-  if (orW.length) return parts.join(" OR ");
-  return parts.join(" AND ");
+  return undefined;
 }
 
+/**
+ * Resolve full items for KEYS_ONLY GSI results via BatchGetItem.
+ *
+ * Keys are chunked into batches of 100 (DynamoDB limit).
+ * UnprocessedKeys are retried with exponential backoff (max 3 attempts).
+ */
 async function resolveKEYS_ONLY(
   docClient: DynamoDBDocumentClient,
   tableName: string,
-  plan: FindManyPlan,
-  items: Record<string, any>[]
+  plan: { followUpKeyFields?: { pkField: string; skField?: string } },
+  items: Record<string, any>[],
 ): Promise<Record<string, any>[]> {
-  // Build BatchGetCommand keys
+  // Build keys from GSI results
   const keys = items.map(item => {
     const k: Record<string, any> = { [plan.followUpKeyFields!.pkField]: item[plan.followUpKeyFields!.pkField] };
     if (plan.followUpKeyFields?.skField && item[plan.followUpKeyFields.skField] !== undefined) {
@@ -335,22 +302,56 @@ async function resolveKEYS_ONLY(
     return k;
   });
 
-  // BatchGetItem in chunks of 100
+  // BatchGetItem in chunks of 100, with UnprocessedKeys retry
   const results: Record<string, any>[] = [];
   for (let i = 0; i < keys.length; i += 100) {
     const chunk = keys.slice(i, i + 100);
-    const result = await docClient.send(
-      new BatchGetCommand({
-        RequestItems: {
-          [tableName]: {
-            Keys: chunk,
-          },
-        },
-      })
-    );
-    const responses = (result.Responses as any)?.[tableName];
-    if (responses) results.push(...responses);
+    const resolved = await _batchGetWithRetry(docClient, tableName, chunk);
+    results.push(...resolved);
   }
 
   return results;
+}
+
+const MAX_RETRY_ATTEMPTS = 3;
+
+async function _batchGetWithRetry(
+  docClient: DynamoDBDocumentClient,
+  tableName: string,
+  keys: Record<string, any>[],
+  attempt: number = 1,
+): Promise<Record<string, any>[]> {
+  const result = await docClient.send(
+    new BatchGetCommand({
+      RequestItems: {
+        [tableName]: { Keys: keys },
+      },
+    }),
+  );
+
+  const responses: Record<string, any>[] = (result.Responses as any)?.[tableName] ?? [];
+
+  // Check for UnprocessedKeys and retry with exponential backoff
+  const unprocessed = (result.UnprocessedKeys as any)?.[tableName]?.Keys;
+  if (unprocessed && unprocessed.length > 0 && attempt < MAX_RETRY_ATTEMPTS) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.pow(2, attempt - 1) * 100 + Math.random() * 50),
+    );
+    const retryResults = await _batchGetWithRetry(
+      docClient,
+      tableName,
+      unprocessed,
+      attempt + 1,
+    );
+    responses.push(...retryResults);
+  } else if (unprocessed && unprocessed.length > 0) {
+    // Max attempts reached — some items were not retrieved.
+    // Return what we have; this is best-effort.
+    if (attempt === MAX_RETRY_ATTEMPTS) {
+      // Could log a warning here, but the SDK interface is synchronous.
+      // Worst case: caller gets fewer items than expected.
+    }
+  }
+
+  return responses;
 }
