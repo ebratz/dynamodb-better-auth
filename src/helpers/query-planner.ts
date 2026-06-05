@@ -31,14 +31,44 @@ interface WhereEntry {
  * transformation internally, so the planner uses raw field names
  * for Key construction and GSI matching.
  */
-function identityGetFieldName({ field }: { model: string; field: string }): string {
+export function identityGetFieldName({ field }: { model: string; field: string }): string {
   return field;
 }
-function identityGetFieldAttributes(): any {
+export function identityGetFieldAttributes(): any {
   return {};
 }
 
 // ── Public API ──────────────────────────────────────────────────
+
+/**
+ * Build a plain FilterExpression (and associated names/values) from a
+ * where clause — useful for count, updateMany _findItems, deleteMany
+ * _findItems, and any Scan path that just needs a filter.
+ *
+ * Delegates to convertWhereClause with identity field resolvers.
+ */
+export function resolveFilter(
+  where: WhereEntry[],
+  model: string,
+  _config: DynamoDBAdapterConfig,
+): {
+  expression: string;
+  expressionAttributeNames: Record<string, string>;
+  expressionAttributeValues: Record<string, any>;
+} | undefined {
+  if (!where || where.length === 0) return undefined;
+  const result = convertWhereClause(where, {
+    model,
+    getFieldName: identityGetFieldName,
+    getFieldAttributes: identityGetFieldAttributes,
+  });
+  if (!result.expression) return undefined;
+  return {
+    expression: result.expression,
+    expressionAttributeNames: result.expressionAttributeNames,
+    expressionAttributeValues: result.expressionAttributeValues,
+  };
+}
 
 export function resolveQueryPlan(
   where: WhereEntry[],
@@ -257,7 +287,7 @@ function findEqClause(
  * DynanoDB docs: =, <, <=, >, >=, BETWEEN, begins_with
  */
 const SORT_KEY_OPERATORS = new Set([
-  "eq", "lt", "lte", "gt", "gte", "starts_with",
+  "eq", "lt", "lte", "gt", "gte", "starts_with", "between",
 ]);
 
 function isSortKeyOperator(op: string): boolean {
