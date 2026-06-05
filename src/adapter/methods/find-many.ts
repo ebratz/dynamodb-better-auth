@@ -17,7 +17,7 @@
 
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { compactExpr } from "../../helpers/expression-names";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { matchesClientFilters } from "../../helpers/resolve-item";
@@ -27,16 +27,13 @@ import { shouldLog } from "../../helpers/debug-log";
 import { getTableName } from "../client";
 import { UnsupportedOptionError } from "../../errors";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
-
 export function findManyMethod(
   docClient: DynamoDBDocumentClient,
   config: DynamoDBAdapterConfig
 ) {
   return async (args: {
     model: string;
-    where?: Where[];
+    where?: WhereClause[];
     limit?: number;
     offset?: number;
     sortBy?: { field: string; direction: "asc" | "desc" };

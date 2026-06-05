@@ -14,15 +14,13 @@ import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
 import type { TransactionContext } from "./tx-types";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
+import type { WhereClause } from "../types";
 
 export async function txConsumeOne(
   ctx: TransactionContext,
   args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
   },
 ): Promise<Record<string, any> | null> {
   const { model, where } = args;

@@ -5,19 +5,17 @@
  * per item with field-level SET expressions. Returns the count.
  */
 
-import { buildExpressionNames } from "../helpers/expression-names";
+import { buildUpdateExpression } from "../helpers/update-item";
 import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import type { TransactionContext } from "./tx-types";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
+import type { WhereClause } from "../types";
 
 export async function txUpdateMany(
   ctx: TransactionContext,
   args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
     update: Record<string, any>;
   },
 ): Promise<number> {
@@ -43,19 +41,14 @@ export async function txUpdateMany(
   // Block >100 actions
   assertTransactionCapacity(ctx.writeBuffer, items.length);
 
-  const { names, toRef } = buildExpressionNames(Object.keys(update));
+  const { setClauses, attrNames, attrValues: baseAttrValues } =
+    buildUpdateExpression(update, schema.pkField, schema.skField);
 
-  // Each item gets its own Update expression with its own values
+  // Each item gets its own Update with a cloned ExpressionAttributeValues map.
+  // attrNames is shared (identical for every item); attrValues must be unique
+  // per command to avoid DynamoDB reference-collision errors.
   for (const item of items) {
-    const itemValues: Record<string, any> = {};
-    const itemClauses: string[] = [];
-    let vi = 0;
-    for (const [field, value] of Object.entries(update)) {
-      const vk = `:v${vi}`;
-      itemValues[vk] = value;
-      itemClauses.push(`${toRef(field)} = ${vk}`);
-      vi++;
-    }
+    const itemValues = { ...baseAttrValues };
 
     const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
     if (schema.skField && item[schema.skField] !== undefined) {
@@ -66,8 +59,8 @@ export async function txUpdateMany(
       Update: {
         TableName: tableName,
         Key: key,
-        UpdateExpression: `SET ${itemClauses.join(", ")}`,
-        ExpressionAttributeNames: names,
+        UpdateExpression: `SET ${setClauses.join(", ")}`,
+        ExpressionAttributeNames: attrNames,
         ExpressionAttributeValues: itemValues,
       },
     });

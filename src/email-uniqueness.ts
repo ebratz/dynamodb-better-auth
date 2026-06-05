@@ -5,12 +5,18 @@
  * strongly-consistent email uniqueness checks. All operations use
  * TransactWriteItems for atomicity.
  *
+ * buildEmailUniquenessActions is the single source of truth for email-lookup
+ * TransactWriteItems. Standalone functions call it rather than inlining.
+ *
+ * parseEmailUniquenessError is exported for use by transaction.ts's flush
+ * handler — it detects EMAIL_EXISTS collisions in TransactionCanceledException.
+ *
  * Exports:
  *   createUserWithEmailUniqueness(docClient, config, data) → Promise<User>
  *   deleteUserWithEmailRelease(docClient, config, user) → Promise<void>
  *   updateUserEmailWithUniqueness(docClient, config, user, oldEmail, newEmail, patch) → Promise<User>
  *   buildEmailUniquenessActions(operation, config, data/opts) → TransactWriteItem[]
- *     (helper for X1 transaction.ts — returns buffer items for email-lookup ops)
+ *   parseEmailUniquenessError(err, transactItems, emailTable) → DynamoAdapterError | null
  */
 
 import {
@@ -20,8 +26,49 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "./types";
 import { DynamoAdapterError } from "./errors";
 import { generateToken } from "./helpers/uuid";
+import { buildUpdateExpression } from "./helpers/update-item";
 
-// ── Public API ──────────────────────────────────────────────────
+// ── Shared error parser ─────────────────────────────────────────
+
+/**
+ * Detects an email uniqueness violation inside a TransactionCanceledException.
+ * Checks each cancellation reason against the corresponding transact item:
+ * if the item is an email-lookup Put (identified by #pk → "email" or table-name
+ * match) and its reason is ConditionalCheckFailed, this is an EMAIL_EXISTS.
+ *
+ * Returns a DynamoAdapterError("EMAIL_EXISTS", ...) or null.
+ */
+export function parseEmailUniquenessError(
+  err: any,
+  transactItems: any[],
+  emailTable: string,
+): DynamoAdapterError | null {
+  if (err.name !== "TransactionCanceledException") return null;
+
+  const reasons = err.CancellationReasons ?? [];
+
+  for (let i = 0; i < reasons.length; i++) {
+    if (reasons[i]?.Code === "ConditionalCheckFailed") {
+      const item = transactItems[i];
+      // Detect email-lookup Put: #pk maps to "email", or the item targets
+      // the configured emailLookups table.
+      if (
+        item?.Put?.ExpressionAttributeNames?.["#pk"] === "email" ||
+        item?.Put?.TableName === emailTable
+      ) {
+        return new DynamoAdapterError(
+          "EMAIL_EXISTS",
+          "Email is already registered",
+          err,
+        );
+      }
+    }
+  }
+
+  return null;
+}
+
+// ── Public API: Standalone functions ────────────────────────────
 
 /**
  * Creates a user with atomic email-uniqueness enforcement.
@@ -50,54 +97,36 @@ export async function createUserWithEmailUniqueness(
     );
   }
 
-  const userId = data.id as string;
-  const emailLower = email.toLowerCase();
+  // User Put
+  const userPut = {
+    Put: {
+      TableName: userTable,
+      Item: data,
+      ConditionExpression: "attribute_not_exists(#pk)",
+      ExpressionAttributeNames: { "#pk": "id" },
+    },
+  };
 
-  const transactItems = [
-    {
-      Put: {
-        TableName: userTable,
-        Item: data,
-        ConditionExpression: "attribute_not_exists(#pk)",
-        ExpressionAttributeNames: { "#pk": "id" },
-      },
-    },
-    {
-      Put: {
-        TableName: emailTable,
-        Item: {
-          email: emailLower,
-          userId,
-        },
-        ConditionExpression: "attribute_not_exists(#pk)",
-        ExpressionAttributeNames: { "#pk": "email" },
-      },
-    },
-  ];
+  // Email-lookup via shared builder
+  const emailActions = buildEmailUniquenessActions("create", config, { data });
+  const transactItems = [userPut, ...emailActions];
 
   try {
     await docClient.send(
       new TransactWriteCommand({
-        TransactItems: transactItems,
+        TransactItems: transactItems as any,
         ClientRequestToken: generateToken(),
       }),
     );
     return data;
   } catch (err: any) {
+    const emailErr = parseEmailUniquenessError(err, transactItems, emailTable);
+    if (emailErr) throw emailErr;
+
     if (err.name === "TransactionCanceledException") {
-      const reasons = err.CancellationReasons ?? [];
-      // Index 0 = user Put, Index 1 = email-lookup Put
-      if (reasons[1]?.Code === "ConditionalCheckFailed") {
-        throw new DynamoAdapterError(
-          "EMAIL_EXISTS",
-          `Email "${email}" is already registered`,
-          err,
-        );
-      }
-      // Index 0 failure (user id collision) is a UUID collision — rethrow as general error
       throw new DynamoAdapterError(
         "CONDITIONAL_CHECK_FAILED",
-        `User creation failed: ${JSON.stringify(reasons)}`,
+        `User creation failed: ${JSON.stringify(err.CancellationReasons ?? [])}`,
         err,
       );
     }
@@ -122,43 +151,21 @@ export async function deleteUserWithEmailRelease(
     );
   }
 
-  const userId = user.id as string;
-  const email = (user.email as string)?.toLowerCase();
+  // User Delete
+  const userDelete = {
+    Delete: {
+      TableName: userTable,
+      Key: { id: user.id as string },
+    },
+  };
 
-  if (!email) {
-    // No email to release — just delete the user
-    await docClient.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Delete: {
-              TableName: userTable,
-              Key: { id: userId },
-            },
-          },
-        ],
-        ClientRequestToken: generateToken(),
-      }),
-    );
-    return;
-  }
+  // Email-lookup via shared builder (returns empty if user has no email)
+  const emailActions = buildEmailUniquenessActions("delete", config, { user });
+  const transactItems = [userDelete, ...emailActions];
 
   await docClient.send(
     new TransactWriteCommand({
-      TransactItems: [
-        {
-          Delete: {
-            TableName: userTable,
-            Key: { id: userId },
-          },
-        },
-        {
-          Delete: {
-            TableName: emailTable,
-            Key: { email },
-          },
-        },
-      ],
+      TransactItems: transactItems as any,
       ClientRequestToken: generateToken(),
     }),
   );
@@ -186,87 +193,57 @@ export async function updateUserEmailWithUniqueness(
   }
 
   const userId = user.id as string;
-  const oldEmailLower = oldEmail.toLowerCase();
-  const newEmailLower = newEmail.toLowerCase();
 
-  // Build SET clauses for user update
-  const setClauses: string[] = [];
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
+  // Build SET clauses via shared helper (strips PK "id", Date → ISO)
+  const { setClauses, attrNames, attrValues } = buildUpdateExpression(
+    patch as Record<string, any>,
+    "id",
+  );
 
-  let idx = 0;
-  for (const [field, value] of Object.entries(patch)) {
-    const nk = `#f${idx}`;
-    const vk = `:v${idx}`;
-    names[nk] = field;
-    values[vk] = value;
-    setClauses.push(`${nk} = ${vk}`);
-    idx++;
-  }
+  // Append the email SET clause (buildUpdateExpression strips PK, not email,
+  // but email is passed separately as newEmail — ensure it's set explicitly).
+  const emailIdx = setClauses.length;
+  attrNames[`#n${emailIdx}`] = "email";
+  attrValues[`:v${emailIdx}`] = newEmail;
+  setClauses.push(`#n${emailIdx} = :v${emailIdx}`);
 
-  // Also set email in the user row
-  const emailNk = `#f${idx}`;
-  const emailVk = `:v${idx}`;
-  names[emailNk] = "email";
-  values[emailVk] = newEmail;
-  setClauses.push(`${emailNk} = ${emailVk}`);
-
-  const updateExpression = `SET ${setClauses.join(", ")}`;
-
-  const transactItems = [
-    {
-      Update: {
-        TableName: userTable,
-        Key: { id: userId },
-        UpdateExpression: updateExpression,
-        ExpressionAttributeNames: { ...names, "#pk": "id" },
-        ExpressionAttributeValues: values,
-        ConditionExpression: "attribute_exists(#pk)",
-      },
+  // User Update
+  const userUpdate = {
+    Update: {
+      TableName: userTable,
+      Key: { id: userId },
+      UpdateExpression: `SET ${setClauses.join(", ")}`,
+      ExpressionAttributeNames: { ...attrNames, "#pk": "id" },
+      ExpressionAttributeValues: attrValues,
+      ConditionExpression: "attribute_exists(#pk)",
     },
-    {
-      Delete: {
-        TableName: emailTable,
-        Key: { email: oldEmailLower },
-      },
-    },
-    {
-      Put: {
-        TableName: emailTable,
-        Item: {
-          email: newEmailLower,
-          userId,
-        },
-        ConditionExpression: "attribute_not_exists(#pk)",
-        ExpressionAttributeNames: { "#pk": "email" },
-      },
-    },
-  ];
+  };
+
+  // Email-lookup actions via shared builder
+  const emailActions = buildEmailUniquenessActions("updateEmail", config, {
+    user,
+    oldEmail,
+    newEmail,
+  });
+  const transactItems = [userUpdate, ...emailActions];
 
   try {
     await docClient.send(
       new TransactWriteCommand({
-        TransactItems: transactItems,
+        TransactItems: transactItems as any,
         ClientRequestToken: generateToken(),
       }),
     );
 
-    // Return the merged result (user fields + patch + new email)
     return { ...user, ...patch, email: newEmail };
   } catch (err: any) {
+    const emailErr = parseEmailUniquenessError(err, transactItems, emailTable);
+    if (emailErr) throw emailErr;
+
     if (err.name === "TransactionCanceledException") {
-      const reasons = err.CancellationReasons ?? [];
-      // Index 2 = new email-lookup Put
-      if (reasons[2]?.Code === "ConditionalCheckFailed") {
-        throw new DynamoAdapterError(
-          "EMAIL_EXISTS",
-          `Email "${newEmail}" is already registered`,
-          err,
-        );
-      }
       throw new DynamoAdapterError(
         "TRANSACTION_FAILED",
-        `Email update failed: ${JSON.stringify(reasons)}`,
+        `Email update failed: ${JSON.stringify(err.CancellationReasons ?? [])}`,
         err,
       );
     }
@@ -284,8 +261,10 @@ type TransactWriteItem =
 /**
  * Builds the email-lookup TransactWriteItems that should be included
  * when a user create/delete/update happens inside a transaction.
- * Used by the transaction wrapper (X1) to include email-uniqueness
- * actions in the outer TransactWriteItems.
+ * Used by both the standalone functions and the transaction wrapper (X1).
+ *
+ * This is the single source of truth — all callers (standalone + tx handlers)
+ * go through this function, not inline email-lookup item construction.
  *
  * @param operation - "create" | "delete" | "updateEmail"
  * @param config - adapter config
@@ -371,5 +350,3 @@ export function buildEmailUniquenessActions(
       return [];
   }
 }
-
-

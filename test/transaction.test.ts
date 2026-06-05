@@ -139,7 +139,7 @@ describe("transaction", () => {
       expect(calls[0].TransactItems.length).toBe(1);
 
       const item = calls[0].TransactItems[0];
-      expect(item.Put).toBeDefined();
+      expect(item.Put).toMatchObject({ TableName: "test-users" });
       expect(item.Put.TableName).toBe("test-users");
       expect(item.Put.Item).toEqual({ id: "u1", email: "a@b.com", name: "Alice" });
       expect(item.Put.ConditionExpression).toContain("attribute_not_exists");
@@ -179,8 +179,7 @@ describe("transaction", () => {
       // Flush should have Update action
       expect(calls.length).toBe(1);
       const item = calls[0].TransactItems[0];
-      expect(item.Update).toBeDefined();
-      expect(item.Update.TableName).toBe("test-users");
+      expect(item.Update).toMatchObject({ TableName: "test-users" });
       expect(item.Update.Key).toEqual({ id: "u1" });
       expect(item.Update.UpdateExpression).toContain("SET");
     });
@@ -204,8 +203,7 @@ describe("transaction", () => {
       });
 
       const item = calls[0].TransactItems[0];
-      expect(item.Delete).toBeDefined();
-      expect(item.Delete.TableName).toBe("test-sessions");
+      expect(item.Delete).toMatchObject({ TableName: "test-sessions" });
       expect(item.Delete.Key).toEqual({ token: "tok123" });
     });
 
@@ -305,8 +303,7 @@ describe("transaction", () => {
 
       // Buffered delete has condition
       const item = calls[0].TransactItems[0];
-      expect(item.Delete).toBeDefined();
-      expect(item.Delete.TableName).toBe("test-verifications");
+      expect(item.Delete).toMatchObject({ TableName: "test-verifications" });
       expect(item.Delete.Key).toEqual({ id: "v1" });
       expect(item.Delete.ConditionExpression).toContain("attribute_exists");
     });
@@ -584,17 +581,14 @@ describe("transaction", () => {
       expect(calls[0].TransactItems.length).toBe(3);
 
       // User Update
-      expect(calls[0].TransactItems[0].Update).toBeDefined();
-      expect(calls[0].TransactItems[0].Update.TableName).toBe("test-users");
+      expect(calls[0].TransactItems[0].Update).toMatchObject({ TableName: "test-users" });
 
       // Delete old email
-      expect(calls[0].TransactItems[1].Delete).toBeDefined();
-      expect(calls[0].TransactItems[1].Delete.TableName).toBe("test-email-lookups");
+      expect(calls[0].TransactItems[1].Delete).toMatchObject({ TableName: "test-email-lookups" });
       expect(calls[0].TransactItems[1].Delete.Key).toEqual({ email: "old@test.com" });
 
       // Put new email
-      expect(calls[0].TransactItems[2].Put).toBeDefined();
-      expect(calls[0].TransactItems[2].Put.TableName).toBe("test-email-lookups");
+      expect(calls[0].TransactItems[2].Put).toMatchObject({ TableName: "test-email-lookups" });
       expect(calls[0].TransactItems[2].Put.Item.email).toBe("new@test.com");
     });
 
@@ -1002,7 +996,7 @@ describe("transaction", () => {
       expect(result).toEqual({ name: "Ghost" });
       // The item is still buffered for Update (it will fail at flush with ConditionalCheckFailed)
       expect(calls.length).toBe(1);
-      expect(calls[0].TransactItems[0].Update).toBeDefined();
+      expect(calls[0].TransactItems[0].Update).toMatchObject({ TableName: "test-users" });
       expect(calls[0].TransactItems[0].Update.Key).toEqual({ id: "nonexistent" });
     });
   });

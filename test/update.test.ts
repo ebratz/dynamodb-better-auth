@@ -92,9 +92,9 @@ describe("update", () => {
     expect(calls[0].UpdateExpression).toContain("=");
     expect(calls[0].ReturnValues).toBe("ALL_NEW");
     // ExpressionAttributeNames should contain the name field ref
-    expect(calls[0].ExpressionAttributeNames).toBeDefined();
+    expect(Object.keys(calls[0].ExpressionAttributeNames).length).toBeGreaterThan(0);
     // ExpressionAttributeValues should contain the new name value
-    expect(calls[0].ExpressionAttributeValues).toBeDefined();
+    expect(Object.keys(calls[0].ExpressionAttributeValues).length).toBeGreaterThan(0);
     const vals: any = calls[0].ExpressionAttributeValues;
     const valRefs = Object.keys(vals);
     expect(valRefs.length).toBe(1);
@@ -165,7 +165,7 @@ describe("update", () => {
       update: { name: "New" },
     });
 
-    expect(result).toBeDefined();
+    expect(result).not.toBeNull();
     expect(result!.name).toBe("New");
     // First call should be Query, second should be Update
     expect(calls[0]._type).toBe("QueryCommand");
@@ -198,7 +198,7 @@ describe("update", () => {
       update: { name: "New" },
     });
 
-    expect(result).toBeDefined();
+    expect(result).not.toBeNull();
     // Scan used, then UpdateCommand on resolved key (NOT PutItem)
     expect(calls[0]._type).toBe("ScanCommand");
     expect(calls[1]._type).toBe("UpdateCommand");
@@ -436,7 +436,7 @@ describe("update", () => {
       update: { name: "Alice Renamed" },
     });
 
-    expect(result).toBeDefined();
+    expect(result).not.toBeNull();
     expect(result!.name).toBe("Alice Renamed");
     // Should update only the first match
     expect(calls[1]._type).toBe("UpdateCommand");

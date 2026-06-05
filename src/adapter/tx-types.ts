@@ -4,10 +4,7 @@
  * Extracted from createTransactionWrapper to keep handler files self-contained.
  */
 
-import type { DynamoDBAdapterConfig } from "../types";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
+import type { DynamoDBAdapterConfig, WhereClause } from "../types";
 
 /**
  * Helpers exposed by better-auth's `createAdapterFactory` to the
@@ -49,9 +46,9 @@ export interface TransactionContext {
   writeBuffer: any[];
   /** Native (non-transactional) adapter methods for reads. */
   nativeAdapter: {
-    findOne: (args: { model: string; where: Where[] }) => Promise<Record<string, any> | null>;
-    findMany: (args: { model: string; where: Where[]; limit?: number; sortBy?: any; offset?: number }) => Promise<Record<string, any>[]>;
-    count: (args: { model: string; where?: Where[] }) => Promise<number>;
+    findOne: (args: { model: string; where: WhereClause[] }) => Promise<Record<string, any> | null>;
+    findMany: (args: { model: string; where: WhereClause[]; limit?: number; sortBy?: any; offset?: number }) => Promise<Record<string, any>[]>;
+    count: (args: { model: string; where?: WhereClause[] }) => Promise<number>;
     [key: string]: any;
   };
   /** Adapter configuration (tables, indexes, email uniqueness, etc.) */

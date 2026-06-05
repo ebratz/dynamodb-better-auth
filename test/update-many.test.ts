@@ -305,11 +305,11 @@ describe("updateMany", () => {
 
     expect(count).toBe(3);
     const batchCall = calls.find((c: any) => c._type === "BatchWriteCommand");
-    expect(batchCall).toBeDefined();
+    expect(batchCall).not.toBeNull();
     // Should use PutRequest (full-item overwrite), not UpdateCommand
     const putRequests = batchCall.RequestItems["test-users"];
     expect(putRequests.length).toBe(3);
-    expect(putRequests[0].PutRequest).toBeDefined();
+    expect(putRequests[0].PutRequest).toMatchObject({ Item: { role: "admin" } });
     expect(putRequests[0].PutRequest.Item.role).toBe("admin");
     expect(putRequests[0].PutRequest.Item.name).toBe("Alice"); // full item preserved
   });

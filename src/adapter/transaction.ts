@@ -21,7 +21,7 @@ import {
   TransactWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../types";
 import { generateToken } from "../helpers/uuid";
 import { DynamoAdapterError } from "../errors";
 import { resolveDocClient } from "./client";
@@ -32,6 +32,7 @@ import { txUpdateMany } from "./tx-update-many";
 import { txDelete } from "./tx-delete";
 import { txDeleteMany } from "./tx-delete-many";
 import { txConsumeOne } from "./tx-consume-one";
+import { parseEmailUniquenessError } from "../email-uniqueness";
 
 import {
   type TransactionFactoryHelpers,
@@ -40,9 +41,6 @@ import {
 
 // Re-exported for factory.ts
 export { type TransactionFactoryHelpers, type TransactionHelpersRef } from "./tx-types";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
 
 /**
  * Creates a transaction wrapper that buffers writes and flushes
@@ -55,9 +53,9 @@ type Where = any;
  */
 export function createTransactionWrapper(
   nativeAdapter: {
-    findOne: (args: { model: string; where: Where[] }) => Promise<Record<string, any> | null>;
-    findMany: (args: { model: string; where: Where[]; limit?: number; sortBy?: any; offset?: number }) => Promise<Record<string, any>[]>;
-    count: (args: { model: string; where?: Where[] }) => Promise<number>;
+    findOne: (args: { model: string; where: WhereClause[] }) => Promise<Record<string, any> | null>;
+    findMany: (args: { model: string; where: WhereClause[]; limit?: number; sortBy?: any; offset?: number }) => Promise<Record<string, any>[]>;
+    count: (args: { model: string; where?: WhereClause[] }) => Promise<number>;
     [key: string]: any;
   },
   config: DynamoDBAdapterConfig,
@@ -123,29 +121,18 @@ export function createTransactionWrapper(
         );
       } catch (err: any) {
         if (err.name === "TransactionCanceledException") {
-          const reasons = err.CancellationReasons ?? [];
-
-          // Check for email uniqueness violations
+          // Check for email uniqueness violations via shared helper
           if (hasEmailUniqueness.value) {
-            // Look through cancellation reasons for email-lookup ConditionalCheckFailed
-            for (let i = 0; i < reasons.length; i++) {
-              if (reasons[i]?.Code === "ConditionalCheckFailed") {
-                const wi = writeBuffer[i];
-                if (
-                  wi?.Put?.ExpressionAttributeNames?.["#pk"] === "email" ||
-                  (wi?.Put?.TableName && wi.Put.TableName === config.tables.emailLookups)
-                ) {
-                  throw new DynamoAdapterError(
-                    "EMAIL_EXISTS",
-                    "Email is already registered",
-                    err,
-                  );
-                }
-              }
-            }
+            const emailErr = parseEmailUniquenessError(
+              err,
+              writeBuffer,
+              config.tables.emailLookups ?? "",
+            );
+            if (emailErr) throw emailErr;
           }
 
           // Parse all reasons
+          const reasons = err.CancellationReasons ?? [];
           const parsedReasons = reasons.map((r: any, i: number) => ({
             Code: r.Code,
             Message: r.Message,

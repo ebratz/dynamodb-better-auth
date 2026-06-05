@@ -11,13 +11,10 @@
 
 import { ScanCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { resolveFilter } from "../../helpers/query-planner";
 import { getTableName } from "../client";
 import { shouldLog } from "../../helpers/debug-log";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
 
 export function countMethod(
   docClient: DynamoDBDocumentClient,
@@ -25,7 +22,7 @@ export function countMethod(
 ) {
   return async (args: {
     model: string;
-    where?: Where[];
+    where?: WhereClause[];
   }): Promise<number> => {
     const tableName = getTableName(args.model, config);
 

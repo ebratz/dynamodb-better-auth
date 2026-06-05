@@ -87,6 +87,20 @@ export interface DynamoDBAdapterConfig {
   debugLogs?: boolean | Record<string, boolean>;
 }
 
+// ── Where clause shape ──────────────────────────────────────────
+
+/**
+ * Single element of a Better Auth where clause.
+ * Shared across all adapter method and transaction handler signatures.
+ */
+export interface WhereClause {
+  field: string;
+  value: string | number | boolean | string[] | number[] | Date | null;
+  operator?: string;
+  connector?: "AND" | "OR";
+  mode?: "sensitive" | "insensitive";
+}
+
 // ── Internal Types ──────────────────────────────────────────────
 
 export interface KeySchema {

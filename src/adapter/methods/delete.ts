@@ -12,14 +12,11 @@
 
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan } from "../../helpers/resolve-item";
 import { getTableName } from "../client";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
 
 export function deleteMethod(
   docClient: DynamoDBDocumentClient,
@@ -27,7 +24,7 @@ export function deleteMethod(
 ) {
   return async (args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
   }): Promise<void> => {
     const { model, where } = args;
     const tableName = getTableName(model, config);

@@ -18,7 +18,7 @@ import {
   GetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { getTableName } from "../client";
 import { resolveQueryPlan } from "../../helpers/query-planner";
@@ -27,16 +27,13 @@ import { fetchAllByPlan, type FetchAllPlan } from "../../helpers/fetch-all";
 import { DynamoAdapterError } from "../../errors";
 import { shouldLog } from "../../helpers/debug-log";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
-
 export function deleteManyMethod(
   docClient: DynamoDBDocumentClient,
   config: DynamoDBAdapterConfig,
 ) {
   return async (args: {
     model: string;
-    where?: Where[];
+    where?: WhereClause[];
   }): Promise<number> => {
     const { model, where } = args;
 

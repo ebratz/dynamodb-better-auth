@@ -59,7 +59,7 @@ describe("create", () => {
     const [cmd] = docClient._calls();
     expect(cmd.TableName).toBe("test-users");
     expect(cmd.Item).toEqual(data);
-    expect(cmd.ConditionExpression).toBeDefined();
+    expect(cmd.ConditionExpression).toBeTruthy();
   });
 
   it("throws on ConditionalCheckFailedException as DynamoAdapterError", async () => {
@@ -94,7 +94,7 @@ describe("create", () => {
     const [cmd] = docClient._calls();
     expect(cmd.ConditionExpression).toContain("attribute_not_exists");
     // PK field is in ExpressionAttributeNames, not the expression string
-    expect(cmd.ExpressionAttributeNames).toBeDefined();
+    expect(Object.keys(cmd.ExpressionAttributeNames).length).toBeGreaterThan(0);
     const attrNames = Object.values(cmd.ExpressionAttributeNames);
     expect(attrNames).toContain("providerId");
   });

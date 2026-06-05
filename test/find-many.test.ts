@@ -322,7 +322,7 @@ describe("findMany", () => {
     });
 
     const scanCmd = calls.find((c: any) => c.FilterExpression);
-    expect(scanCmd).toBeDefined();
+    expect(scanCmd).not.toBeNull();
     // With connectors [AND, AND, OR], the filter groups AND clauses then OR clause
     // Result: (A AND B) AND (C) — contains AND (from grouping), C is wrapped standalone
     expect(scanCmd.FilterExpression).toContain("AND");
@@ -459,7 +459,7 @@ describe("findMany", () => {
 
     const calls = docClient._calls();
     const scanCmd = calls.find((c: any) => c._type === "ScanCommand");
-    expect(scanCmd).toBeDefined();
+    expect(scanCmd).not.toBeNull();
     expect(scanCmd.FilterExpression).toBeUndefined();
     // Must be absent from the SDK input — not just an empty {}.
     expect(scanCmd.ExpressionAttributeNames).toBeUndefined();

@@ -17,6 +17,10 @@
  * UNSUPPORTED (throw UnsupportedOperatorError):
  *   ends_with, mode: "insensitive"
  *
+ * Operator dispatch uses a strategy registry (operators map) so that
+ * adding a new operator is a one-line entry rather than modifying a
+ * 150-line switch statement.
+ *
  * Per DESIGN.md §4 + review-gap fix B (IN chunking).
  */
 
@@ -40,6 +44,171 @@ interface WhereEntry {
   connector?: "AND" | "OR";
   mode?: "sensitive" | "insensitive";
 }
+
+// ── Operator strategy registry ──────────────────────────────────
+
+interface OperatorResult {
+  frag: string;
+  valueIndex: number;
+  chunked?: boolean;
+}
+
+type OperatorStrategy = (
+  fieldRef: string,
+  value: unknown,
+  valueIndex: number,
+  values: Record<string, any>,
+) => OperatorResult;
+
+/**
+ * Registry of all supported DynamoDB operators.
+ *
+ * Each entry is a pure function: (fieldRef, value, valueIndex, values)
+ * → { frag, valueIndex, chunked? }.
+ *
+ * - `fieldRef` – the #nX placeholder (e.g. "#n0")
+ * - `value`     – the value(s) from the where clause
+ * - `valueIndex`– current :v counter before this operator consumes slots
+ * - `values`    – mutable map to populate with :vX → actual value entries
+ *
+ * Adding a new operator is a single entry in this map.
+ */
+const operators: Record<string, OperatorStrategy> = {
+  eq: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `${fieldRef} = ${ref}`, valueIndex: vi + 1 };
+  },
+
+  ne: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `${fieldRef} <> ${ref}`, valueIndex: vi + 1 };
+  },
+
+  gt: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `${fieldRef} > ${ref}`, valueIndex: vi + 1 };
+  },
+
+  gte: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `${fieldRef} >= ${ref}`, valueIndex: vi + 1 };
+  },
+
+  lt: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `${fieldRef} < ${ref}`, valueIndex: vi + 1 };
+  },
+
+  lte: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `${fieldRef} <= ${ref}`, valueIndex: vi + 1 };
+  },
+
+  in: (fieldRef, value, vi, values) => {
+    const arr: unknown[] = Array.isArray(value) ? value : [value];
+    if (arr.length === 0) {
+      return { frag: `${fieldRef} IN ()`, valueIndex: vi };
+    }
+    if (arr.length <= MAX_IN_VALUES) {
+      // Single IN clause
+      const refs: string[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        const ref = `:v${vi + i}`;
+        refs.push(ref);
+        values[ref] = null; // placeholder, populated below
+      }
+      arr.forEach((v, i) => { values[refs[i]!] = v; });
+      return { frag: `${fieldRef} IN (${refs.join(", ")})`, valueIndex: vi + arr.length };
+    }
+    // >100 values — chunk into batches, OR-join
+    const chunks: string[] = [];
+    let idx = vi;
+    for (let i = 0; i < arr.length; i += MAX_IN_VALUES) {
+      const batch = arr.slice(i, i + MAX_IN_VALUES);
+      const refs: string[] = [];
+      for (let j = 0; j < batch.length; j++) {
+        const ref = `:v${idx++}`;
+        refs.push(ref);
+        values[ref] = null;
+      }
+      batch.forEach((v, j) => { values[refs[j]!] = v; });
+      chunks.push(`${fieldRef} IN (${refs.join(", ")})`);
+    }
+    return { frag: `(${chunks.join(" OR ")})`, valueIndex: idx, chunked: true };
+  },
+
+  not_in: (fieldRef, value, vi, values) => {
+    const arr: unknown[] = Array.isArray(value) ? value : [value];
+    if (arr.length === 0) {
+      return { frag: `NOT ${fieldRef} IN ()`, valueIndex: vi };
+    }
+    if (arr.length <= MAX_IN_VALUES) {
+      const refs: string[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        const ref = `:v${vi + i}`;
+        refs.push(ref);
+        values[ref] = null;
+      }
+      arr.forEach((v, i) => { values[refs[i]!] = v; });
+      return { frag: `NOT (${fieldRef} IN (${refs.join(", ")}))`, valueIndex: vi + arr.length };
+    }
+    // >100 values → chunk and AND-join the NOT-IN blocks
+    const parts: string[] = [];
+    let idx = vi;
+    for (let i = 0; i < arr.length; i += MAX_IN_VALUES) {
+      const batch = arr.slice(i, i + MAX_IN_VALUES);
+      const refs: string[] = [];
+      for (let j = 0; j < batch.length; j++) {
+        const ref = `:v${idx++}`;
+        refs.push(ref);
+        values[ref] = null;
+      }
+      batch.forEach((v, j) => { values[refs[j]!] = v; });
+      parts.push(`NOT (${fieldRef} IN (${refs.join(", ")}))`);
+    }
+    return { frag: `(${parts.join(" AND ")})`, valueIndex: idx, chunked: true };
+  },
+
+  contains: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `contains(${fieldRef}, ${ref})`, valueIndex: vi + 1 };
+  },
+
+  starts_with: (fieldRef, value, vi, values) => {
+    const ref = `:v${vi}`;
+    values[ref] = value;
+    return { frag: `begins_with(${fieldRef}, ${ref})`, valueIndex: vi + 1 };
+  },
+
+  between: (fieldRef, value, vi, values) => {
+    const arr: unknown[] = Array.isArray(value) ? value : [];
+    if (arr.length !== 2) {
+      throw new UnsupportedOperatorError(
+        "between",
+        "BETWEEN requires exactly 2 values: [low, high].",
+      );
+    }
+    const loRef = `:v${vi}`;
+    const hiRef = `:v${vi + 1}`;
+    values[loRef] = arr[0];
+    values[hiRef] = arr[1];
+    return { frag: `${fieldRef} BETWEEN ${loRef} AND ${hiRef}`, valueIndex: vi + 2 };
+  },
+
+  ends_with: () => {
+    throw new UnsupportedOperatorError(
+      "ends_with",
+      "DynamoDB has no suffix-match function. Store a reversed copy of the field and use begins_with on a GSI, or filter client-side.",
+    );
+  },
+};
 
 // ── Public API ──────────────────────────────────────────────────
 
@@ -83,159 +252,22 @@ export function convertWhereClause(
       );
     }
 
-    let frag: string;
-
-    switch (operator) {
-      case "eq": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `${fieldRef} = ${ref}`;
-        break;
-      }
-      case "ne": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `${fieldRef} <> ${ref}`;
-        break;
-      }
-      case "gt": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `${fieldRef} > ${ref}`;
-        break;
-      }
-      case "gte": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `${fieldRef} >= ${ref}`;
-        break;
-      }
-      case "lt": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `${fieldRef} < ${ref}`;
-        break;
-      }
-      case "lte": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `${fieldRef} <= ${ref}`;
-        break;
-      }
-      case "in": {
-        const arr = Array.isArray(w.value) ? w.value : [w.value];
-        if (arr.length === 0) {
-          // IN with empty list matches nothing.
-          frag = `${fieldRef} IN ()`;
-        } else if (arr.length <= MAX_IN_VALUES) {
-          const refs = arr.map(() => {
-            const ref = `:v${valueIndex++}`;
-            values[ref] = null; // placeholder — filled below
-            return ref;
-          });
-          // Fill actual values (must happen after refs are created
-          // so valueIndex ordering matches ref list order).
-          arr.forEach((v, i) => {
-            values[refs[i]!] = v;
-          });
-          frag = `${fieldRef} IN (${refs.join(", ")})`;
-        } else {
-          // >100 values — chunk into batches of 100, OR-join.
-          chunked = true;
-          const chunks: string[] = [];
-          for (let i = 0; i < arr.length; i += MAX_IN_VALUES) {
-            const batch = arr.slice(i, i + MAX_IN_VALUES);
-            const refs = batch.map(() => {
-              const ref = `:v${valueIndex++}`;
-              values[ref] = null;
-              return ref;
-            });
-            batch.forEach((v, j) => {
-              values[refs[j]!] = v;
-            });
-            chunks.push(`${fieldRef} IN (${refs.join(", ")})`);
-          }
-          frag = `(${chunks.join(" OR ")})`;
-        }
-        break;
-      }
-      case "not_in": {
-        const arr = Array.isArray(w.value) ? w.value : [w.value];
-        if (arr.length === 0) {
-          frag = `NOT ${fieldRef} IN ()`;
-        } else if (arr.length <= MAX_IN_VALUES) {
-          const refs = arr.map(() => {
-            const ref = `:v${valueIndex++}`;
-            values[ref] = null;
-            return ref;
-          });
-          arr.forEach((v, i) => {
-            values[refs[i]!] = v;
-          });
-          frag = `NOT (${fieldRef} IN (${refs.join(", ")}))`;
-        } else {
-          // >100 values → chunk and AND-join the NOT-IN blocks.
-          // "NOT IN chunk1 AND NOT IN chunk2" correctly excludes all values.
-          chunked = true;
-          const parts: string[] = [];
-          for (let i = 0; i < arr.length; i += MAX_IN_VALUES) {
-            const batch = arr.slice(i, i + MAX_IN_VALUES);
-            const refs = batch.map(() => {
-              const ref = `:v${valueIndex++}`;
-              values[ref] = null;
-              return ref;
-            });
-            batch.forEach((v, j) => {
-              values[refs[j]!] = v;
-            });
-            parts.push(`NOT (${fieldRef} IN (${refs.join(", ")}))`);
-          }
-          frag = `(${parts.join(" AND ")})`;
-        }
-        break;
-      }
-      case "contains": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `contains(${fieldRef}, ${ref})`;
-        break;
-      }
-      case "starts_with": {
-        const ref = `:v${valueIndex++}`;
-        values[ref] = w.value;
-        frag = `begins_with(${fieldRef}, ${ref})`;
-        break;
-      }
-      case "between": {
-        const arr = Array.isArray(w.value) ? w.value : [];
-        if (arr.length !== 2) {
-          throw new UnsupportedOperatorError(
-            "between",
-            "BETWEEN requires exactly 2 values: [low, high].",
-          );
-        }
-        const loRef = `:v${valueIndex++}`;
-        const hiRef = `:v${valueIndex++}`;
-        values[loRef] = arr[0];
-        values[hiRef] = arr[1];
-        frag = `${fieldRef} BETWEEN ${loRef} AND ${hiRef}`;
-        break;
-      }
-      case "ends_with": {
-        throw new UnsupportedOperatorError(
-          "ends_with",
-          "DynamoDB has no suffix-match function. Store a reversed copy of the field and use begins_with on a GSI, or filter client-side.",
-        );
-      }
-      default: {
-        throw new UnsupportedOperatorError(
-          operator,
-          `Operator not in the supported set: eq, ne, gt, gte, lt, lte, in, not_in, contains, starts_with, between.`,
-        );
-      }
+    // Look up operator strategy from the registry
+    const strategy = operators[operator];
+    if (!strategy) {
+      throw new UnsupportedOperatorError(
+        operator,
+        `Operator not in the supported set: ${Object.keys(operators).join(", ")}.`,
+      );
     }
 
-    fragments.push({ frag, connector });
+    const result = strategy(fieldRef, w.value, valueIndex, values);
+    valueIndex = result.valueIndex;
+    if (result.chunked) {
+      chunked = true;
+    }
+
+    fragments.push({ frag: result.frag, connector });
   }
 
   // ── Build final expression with AND/OR grouping ───────────────

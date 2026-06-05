@@ -21,7 +21,7 @@ import {
   BatchWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveKEYS_ONLY } from "../../helpers/batch-get";
@@ -30,16 +30,13 @@ import { buildUpdateExpression } from "../../helpers/update-item";
 import { shouldLog } from "../../helpers/debug-log";
 import { getTableName } from "../client";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
-
 export function updateManyMethod(
   docClient: DynamoDBDocumentClient,
   config: DynamoDBAdapterConfig,
 ) {
   return async (args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
     update: Record<string, any>;
   }): Promise<number> => {
     const { model, where, update } = args;
@@ -96,7 +93,7 @@ export function updateManyMethod(
 async function _findItems(
   docClient: DynamoDBDocumentClient,
   tableName: string,
-  where: Where[],
+  where: WhereClause[],
   model: string,
   schema: { pkField: string; skField?: string },
   config: DynamoDBAdapterConfig,

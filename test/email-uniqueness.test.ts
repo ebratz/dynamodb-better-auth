@@ -78,7 +78,7 @@ describe("email-uniqueness", () => {
       expect(items[1].Put.ConditionExpression).toContain("attribute_not_exists");
 
       // ClientRequestToken should be set for idempotency
-      expect(calls[0].ClientRequestToken).toBeDefined();
+      expect(calls[0].ClientRequestToken).toBeTruthy();
     });
 
     it("throws EMAIL_EXISTS when email-lookup Put fails with ConditionalCheckFailed", async () => {
@@ -248,7 +248,7 @@ describe("email-uniqueness", () => {
       const attrNames = items[0].Update.ExpressionAttributeNames as Record<string, string>;
       expect(Object.values(attrNames)).toContain("name");
       expect(Object.values(attrNames)).toContain("email");
-      expect(items[0].Update.ExpressionAttributeValues).toBeDefined();
+      expect(Object.keys(items[0].Update.ExpressionAttributeValues).length).toBeGreaterThan(0);
 
       // Delete old email-lookup
       expect(items[1].Delete.TableName).toBe("test-email-lookups");
@@ -307,7 +307,7 @@ describe("email-uniqueness", () => {
       );
 
       // Should complete without throwing — DynamoDB Delete is idempotent
-      expect(result).toBeDefined();
+      expect(result).not.toBeNull();
       expect(result.email).toBe("new@test.com");
       // 3 items: Update user, Delete old, Put new
       expect(calls[0].TransactItems.length).toBe(3);

@@ -156,7 +156,7 @@ describe("edge cases", () => {
       });
 
       const updCmd = calls.find((c: any) => c._type === "UpdateCommand");
-      expect(updCmd).toBeDefined();
+      expect(updCmd).toMatchObject({ _type: "UpdateCommand" });
       // ExpressionAttributeNames includes both SET-clause placeholders (#nX)
       // and ConditionExpression placeholders (#pk). Check only the #nX refs.
       const names = updCmd.ExpressionAttributeNames as Record<string, string>;
@@ -205,7 +205,7 @@ describe("edge cases", () => {
       });
 
       const updCmd = calls.find((c: any) => c._type === "UpdateCommand");
-      expect(updCmd).toBeDefined();
+      expect(updCmd).toMatchObject({ _type: "UpdateCommand" });
       // Check only #nX placeholders from SET clauses (exclude #pk from
       // ConditionExpression). PK/SK must be absent from SET fields.
       const names = updCmd.ExpressionAttributeNames as Record<string, string>;
@@ -245,7 +245,7 @@ describe("edge cases", () => {
 
       // Should fall into the empty-setClauses path → GetCommand, not UpdateCommand
       const getCmd = calls.find((c: any) => c._type === "GetCommand");
-      expect(getCmd).toBeDefined();
+      expect(getCmd).toMatchObject({ _type: "GetCommand" });
       expect(getCmd.Key).toEqual({ id: "u1" });
     });
   });
@@ -379,13 +379,10 @@ describe("edge cases", () => {
       });
 
       const scanCmd = calls.find((c: any) => c._type === "ScanCommand");
-      expect(scanCmd).toBeDefined();
+      expect(scanCmd).toMatchObject({ _type: "ScanCommand" });
       // Both clauses reference the same field "role", so they share #n0.
-      // The count method's inline buildSimpleFilter currently joins with AND;
-      // OR connector on the first where entry means: (#n0=:v0) OR (#n0=:v1).
-      // However, the inline buildSimpleFilter maps these to `#n0 = :v0 AND #n0 = :v1`.
       const filterExpr = scanCmd.FilterExpression as string;
-      expect(filterExpr).toBeDefined();
+      expect(typeof filterExpr).toBe("string");
       // Both values exist as separate placeholders
       expect(scanCmd.ExpressionAttributeNames["#n0"]).toBe("role");
       expect(scanCmd.ExpressionAttributeValues[":v0"]).toBe("admin");
@@ -413,7 +410,7 @@ describe("edge cases", () => {
       });
 
       const scanCmd = calls.find((c: any) => c._type === "ScanCommand");
-      expect(scanCmd).toBeDefined();
+      expect(scanCmd).toMatchObject({ _type: "ScanCommand" });
       const filterExpr = scanCmd.FilterExpression as string;
       // status(AND) → group 1, OR splits, role+email(AND) → group 2
       // Result: (#n0 = :v0) OR (#n1 = :v1 AND contains(#n2, :v2))
@@ -473,8 +470,7 @@ describe("edge cases", () => {
       const filterExpr = scanCmd.FilterExpression as string;
       // The inline buildSimpleFilter should handle IN with chunked values
       // via the valRef mechanism
-      expect(scanCmd.ExpressionAttributeValues).toBeDefined();
-      const valCount = Object.keys(scanCmd.ExpressionAttributeValues).length;
+      const valCount = Object.keys(scanCmd.ExpressionAttributeValues ?? {}).length;
       expect(valCount).toBe(150);
     });
   });

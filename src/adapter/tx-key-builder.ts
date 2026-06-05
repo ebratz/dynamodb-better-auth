@@ -5,19 +5,16 @@
  * Requires eq clauses for both PK and (when the model uses a composite key) SK.
  */
 
-import type { KeySchema } from "../types";
+import type { KeySchema, WhereClause } from "../types";
 import { DynamoAdapterError } from "../errors";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
-
 export function buildTxKey(
-  where: Where[],
+  where: WhereClause[],
   schema: KeySchema,
   model: string,
 ): Record<string, any> {
   const pkEq = where.find(
-    (w: Where) => w.field === schema.pkField && (!w.operator || w.operator === "eq"),
+    (w: WhereClause) => w.field === schema.pkField && (!w.operator || w.operator === "eq"),
   );
   if (!pkEq) {
     throw new DynamoAdapterError(
@@ -30,7 +27,7 @@ export function buildTxKey(
 
   if (schema.skField) {
     const skEq = where.find(
-      (w: Where) => w.field === schema.skField && (!w.operator || w.operator === "eq"),
+      (w: WhereClause) => w.field === schema.skField && (!w.operator || w.operator === "eq"),
     );
     if (!skEq) {
       throw new DynamoAdapterError(

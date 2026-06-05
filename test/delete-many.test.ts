@@ -98,7 +98,6 @@ describe("deleteMany", () => {
     // First batch should have 25 items
     const batch1Requests = batchCalls[0].RequestItems["test-users"];
     expect(batch1Requests.length).toBe(25);
-    expect(batch1Requests[0].DeleteRequest).toBeDefined();
     expect(batch1Requests[0].DeleteRequest.Key).toEqual({ id: "u0" });
 
     // Second batch should have 5 items
@@ -320,7 +319,7 @@ describe("deleteMany", () => {
 
     // Should batch-delete the single key
     const batchCall = calls.find((c: any) => c._type === "BatchWriteCommand");
-    expect(batchCall).toBeDefined();
+    expect(batchCall).not.toBeNull();
     expect(batchCall.RequestItems["test-users"][0].DeleteRequest.Key).toEqual({
       id: "u1",
     });

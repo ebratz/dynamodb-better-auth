@@ -151,7 +151,7 @@ describe("delete", () => {
     expect(calls.length).toBe(2);
     // First: Scan
     expect(calls[0]._type).toBe("ScanCommand");
-    expect(calls[0].FilterExpression).toBeDefined();
+    expect(typeof calls[0].FilterExpression).toBe("string");
     expect(calls[0].Limit).toBe(1);
     // Second: DeleteItem
     expect(calls[1]._type).toBe("DeleteCommand");
@@ -208,7 +208,7 @@ describe("delete", () => {
       });
 
       const scan = calls.find((c) => c._type === "ScanCommand");
-      expect(scan).toBeDefined();
+      expect(scan).not.toBeNull();
       expect(scan.FilterExpression).toMatch(expected);
     });
   }

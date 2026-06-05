@@ -180,7 +180,7 @@ describe("resolveQueryPlan", () => {
     expect(plan.indexName).toBe("email-index");
     expect(plan.keyCondition).toContain("#n0 = :v0");
     // Filter expression should be present.
-    expect(plan.filterExpression).toBeDefined();
+    expect(plan.filterExpression).toBeTruthy();
     // Both field names should be in expressionAttributeNames.
     const fieldNames = Object.values(plan.expressionAttributeNames);
     expect(fieldNames).toContain("email");
@@ -292,7 +292,7 @@ describe("resolveQueryPlan", () => {
     expect(plan.tier).toBe(2);
     expect(plan.indexName).toBe("by-userId");
     // createdAt is NOT the sort key — it goes to filter
-    expect(plan.filterExpression).toBeDefined();
+    expect(plan.filterExpression).toBeTruthy();
   });
 
   it("Tier 2: starts_with on GSI sort key goes in KeyConditionExpression", () => {
@@ -350,7 +350,7 @@ describe("resolveQueryPlan", () => {
     );
     expect(plan.tier).toBe(2);
     // contains is not a sort-key operator → goes to FilterExpression
-    expect(plan.filterExpression).toBeDefined();
+    expect(plan.filterExpression).toBeTruthy();
   });
 
   it("Tier 2: key/filter placeholder collision is remapped correctly", () => {
@@ -396,9 +396,7 @@ describe("resolveQueryPlan", () => {
     expect(plan.keyCondition).toContain("#n0 = :v0");
     expect(plan.keyCondition).toContain("#n1");
     // Filter expression should use a distinct, non-colliding placeholder.
-    // Without remapping, filter would reuse #n0 (collision → broken).
     // With remapping, filter gets #n2 (offset = 2 from kcNames).
-    expect(plan.filterExpression).toBeDefined();
     // The value reference stays :v0 (filter starts its own value namespace)
     expect(plan.filterExpression).toContain("#n2 = :v0");
     // Verify the merged names map has all 3 fields with distinct keys

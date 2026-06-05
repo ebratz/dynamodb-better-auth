@@ -11,20 +11,18 @@
  */
 
 import { getKeySchema } from "../helpers/key-builder";
-import { buildExpressionNames } from "../helpers/expression-names";
+import { buildUpdateExpression } from "../helpers/update-item";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
 import { buildTxKey } from "./tx-key-builder";
 import type { TransactionContext } from "./tx-types";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
+import type { WhereClause } from "../types";
 
 export async function txUpdate(
   ctx: TransactionContext,
   args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
     update: Record<string, any>;
   },
 ): Promise<Record<string, any> | null> {
@@ -58,26 +56,23 @@ export async function txUpdate(
   ) {
     ctx.hasEmailUniqueness.value = true;
 
-    // Build user Update
-    const { names, toRef } = buildExpressionNames(
-      Object.keys(update).filter((k) => k !== "email"),
-    );
+    // Build user Update using shared helper (strips PK/SK, Date→ISO).
+    // Exclude email from the shared builder — we add it manually below.
+    const updateWithoutEmail = { ...update };
+    delete updateWithoutEmail.email;
 
-    const setClauses: string[] = [];
-    const values: Record<string, any> = {};
+    const {
+      setClauses,
+      attrNames,
+      attrValues,
+    } = buildUpdateExpression(updateWithoutEmail, schema.pkField, schema.skField);
 
-    let vi = 0;
-    for (const [field, value] of Object.entries(update)) {
-      if (field === "email") continue;
-      const vk = `:v${vi}`;
-      values[vk] = value;
-      setClauses.push(`${toRef(field)} = ${vk}`);
-      vi++;
-    }
-    // Always set email
-    const emailVk = `:v${vi}`;
-    values[emailVk] = update.email;
-    setClauses.push(`${toRef("email")} = ${emailVk}`);
+    // Append email clause manually using the next available indices
+    const emailNameKey = `#n${Object.keys(attrNames).length}`;
+    const emailValueKey = `:v${Object.keys(attrValues).length}`;
+    attrNames[emailNameKey] = "email";
+    attrValues[emailValueKey] = update.email;
+    setClauses.push(`${emailNameKey} = ${emailValueKey}`);
 
     const key = buildTxKey(where, schema, model);
 
@@ -86,8 +81,8 @@ export async function txUpdate(
         TableName: tableName,
         Key: key,
         UpdateExpression: `SET ${setClauses.join(", ")}`,
-        ExpressionAttributeNames: { ...names, "#pk": schema.pkField },
-        ExpressionAttributeValues: values,
+        ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
+        ExpressionAttributeValues: attrValues,
         ConditionExpression: "attribute_exists(#pk)",
       },
     });
@@ -106,18 +101,11 @@ export async function txUpdate(
   }
 
   // Standard update
-  const { names, toRef } = buildExpressionNames(Object.keys(update));
-
-  const setClauses: string[] = [];
-  const values: Record<string, any> = {};
-
-  let vi = 0;
-  for (const [field, value] of Object.entries(update)) {
-    const vk = `:v${vi}`;
-    values[vk] = value;
-    setClauses.push(`${toRef(field)} = ${vk}`);
-    vi++;
-  }
+  const { setClauses, attrNames, attrValues } = buildUpdateExpression(
+    update,
+    schema.pkField,
+    schema.skField,
+  );
 
   const key = buildTxKey(where, schema, model);
 
@@ -126,8 +114,8 @@ export async function txUpdate(
       TableName: tableName,
       Key: key,
       UpdateExpression: `SET ${setClauses.join(", ")}`,
-      ExpressionAttributeNames: { ...names, "#pk": schema.pkField },
-      ExpressionAttributeValues: values,
+      ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
+      ExpressionAttributeValues: attrValues,
       ConditionExpression: "attribute_exists(#pk)",
     },
   });

@@ -12,15 +12,13 @@ import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
 import { buildTxKey } from "./tx-key-builder";
 import type { TransactionContext } from "./tx-types";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
+import type { WhereClause } from "../types";
 
 export async function txDelete(
   ctx: TransactionContext,
   args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
   },
 ): Promise<void> {
   const { model, where } = args;

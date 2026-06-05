@@ -63,7 +63,7 @@ describe("findOne", () => {
       ],
     });
 
-    expect(result).toBeTruthy();
+    expect(result).not.toBeNull();
     expect(result!.id).toBe("acc1");
   });
 
@@ -95,7 +95,7 @@ describe("findOne", () => {
       where: [{ field: "id", operator: "eq", value: "acc1" }],
     });
 
-    expect(result).toBeTruthy();
+    expect(result).not.toBeNull();
     expect(result!.accessToken).toBe("tok");
     expect(docClient._callCount()).toBe(2);  // Query + GetItem
   });

@@ -15,15 +15,12 @@
 
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { DynamoDBAdapterConfig } from "../../types";
+import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { getTableName } from "../client";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan } from "../../helpers/resolve-item";
 import { InvalidWhereError } from "../../errors";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Where = any;
 
 export function consumeOneMethod(
   docClient: DynamoDBDocumentClient,
@@ -31,7 +28,7 @@ export function consumeOneMethod(
 ) {
   return async (args: {
     model: string;
-    where: Where[];
+    where: WhereClause[];
   }): Promise<Record<string, any> | null> => {
     const { model, where } = args;
     const tableName = getTableName(model, config);
@@ -71,11 +68,11 @@ export function consumeOneMethod(
       // Tier 3: rejected — consumeOne requires PK or indexed equality
       if (schema.skField) {
         const pkMatch = where.find(
-          (w: Where) =>
+          (w: WhereClause) =>
             w.field === schema.pkField && (!w.operator || w.operator === "eq"),
         );
         const skMatch = where.find(
-          (w: Where) =>
+          (w: WhereClause) =>
             w.field === schema.skField && (!w.operator || w.operator === "eq"),
         );
         if (pkMatch && !skMatch) {
