@@ -9,6 +9,7 @@ import { createAdapterFactory } from "better-auth/adapters";
 import type { DynamoDBAdapterConfig } from "../types";
 import { resolveDocClient, getTableName } from "./client";
 import { applyMiddleware } from "../helpers/apply-middleware";
+import { validateConfig } from "../helpers/validate-config";
 import { measureLatency } from "../helpers/metrics";
 import { createMethod } from "./methods/create";
 import { findOneMethod } from "./methods/find-one";
@@ -37,6 +38,14 @@ export { deleteManyMethod } from "./methods/delete-many";
 export { consumeOneMethod } from "./methods/consume-one";
 
 export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
+  // ── Config validation (throws on critical errors, warns on non-critical) ──
+  const warnings = validateConfig(config);
+  if (warnings.length > 0 && config.debugLogs) {
+    for (const warning of warnings) {
+      console.warn(`[dynamodb-adapter] ${warning}`);
+    }
+  }
+
   const docClient = resolveDocClient(config.client);
 
   // ── Forgiving tables: unknown models use model name as table name ──

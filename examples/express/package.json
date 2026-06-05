@@ -1,0 +1,26 @@
+{
+  "name": "dynamodb-better-auth-express-example",
+  "private": true,
+  "type": "module",
+  "description": "Express server with Better Auth and DynamoDB adapter",
+  "scripts": {
+    "dev": "tsx watch server.ts",
+    "setup": "tsx setup-tables.ts",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1057.0",
+    "@aws-sdk/lib-dynamodb": "^3.1057.0",
+    "@aws-sdk/util-dynamodb": "^3.996.2",
+    "@ebratz/dynamodb-better-auth": "^0.1.4",
+    "better-auth": "^1.6.12",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}

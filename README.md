@@ -55,9 +55,12 @@ export const auth = betterAuth({
 - [Error handling](#error-handling)
 - [Configuration reference](#configuration-reference)
 - [Plugin models](#plugin-models)
+- [Plugin Schemas](#plugin-schemas)
 - [IAM policy](#iam-policy)
 - [Operational recommendations](#operational-recommendations)
 - [Limitations](#limitations)
+- [Migration from SQL Adapters](#migration-from-sql-adapters)
+- [Performance Tuning](#performance-tuning)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -704,6 +707,235 @@ You create the DynamoDB tables for plugin models the same way as the core ones; 
 
 ---
 
+## Plugin Schemas
+
+This section documents the specific DynamoDB table and GSI requirements for popular Better Auth plugins.
+
+### Admin plugin
+
+Better Auth's admin plugin adds a `listSessions` endpoint that queries sessions by `id`. The `session` table already supports this if the optional `by-id` GSI is deployed (see the [Sessions table setup](#sessions)).
+
+**Required GSIs:**
+
+| Model | GSI | Hash Key | Projection |
+|---|---|---|---|
+| `session` | `by-id` | `id` | `ALL` |
+
+**Config snippet:**
+
+```ts
+indexes: {
+  session: {
+    byId: { indexName: "by-id", hashKey: "id", projection: "ALL" },
+  },
+}
+```
+
+No additional tables beyond the core set. No `keySchemas` override needed (`session` already has PK=`token`).
+
+### Organization plugin
+
+The organization plugin introduces three new models: `organization`, `member`, and `invitation`.
+
+**Required tables:**
+
+| Model | PK | SK | Notes |
+|---|---|---|---|
+| `organization` | `id` | — | |
+| `member` | `id` | — | Needs GSI for lookup by `organizationId` |
+| `invitation` | `id` | — | Needs GSI for lookup by `organizationId` |
+
+**Config snippet:**
+
+```ts
+import { dynamodbAdapter } from "@ebratz/dynamodb-better-auth";
+
+dynamodbAdapter({
+  client,
+  tables: {
+    user:         "myapp-users",
+    session:      "myapp-sessions",
+    account:      "myapp-accounts",
+    verification: "myapp-verifications",
+    // Organization plugin tables
+    organization: "myapp-organizations",
+    member:       "myapp-members",
+    invitation:   "myapp-invitations",
+  },
+  indexes: {
+    organization: {
+      slug: { indexName: "slug-index", hashKey: "slug" },
+    },
+    member: {
+      organizationId: { indexName: "orgId-index", hashKey: "organizationId", projection: "ALL" },
+      userId:         { indexName: "userId-index", hashKey: "userId", projection: "ALL" },
+    },
+    invitation: {
+      organizationId: { indexName: "orgId-index", hashKey: "organizationId", projection: "ALL" },
+    },
+  },
+  keySchemas: {
+    // Use composite (organizationId, userId) to enforce unique membership
+    member: { pkField: "organizationId", skField: "userId" },
+  },
+})
+```
+
+**CloudFormation snippet (Organization table):**
+
+```yaml
+OrganizationTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    TableName: myapp-organizations
+    BillingMode: PAY_PER_REQUEST
+    AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: slug
+        AttributeType: S
+    KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+    GlobalSecondaryIndexes:
+      - IndexName: slug-index
+        KeySchema:
+          - AttributeName: slug
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+```
+
+**CloudFormation snippet (Member table):**
+
+```yaml
+MemberTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    TableName: myapp-members
+    BillingMode: PAY_PER_REQUEST
+    AttributeDefinitions:
+      - AttributeName: organizationId
+        AttributeType: S
+      - AttributeName: userId
+        AttributeType: S
+    KeySchema:
+      - AttributeName: organizationId
+        KeyType: HASH
+      - AttributeName: userId
+        KeyType: RANGE
+    GlobalSecondaryIndexes:
+      - IndexName: orgId-index
+        KeySchema:
+          - AttributeName: organizationId
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      - IndexName: userId-index
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+```
+
+**CloudFormation snippet (Invitation table):**
+
+```yaml
+InvitationTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    TableName: myapp-invitations
+    BillingMode: PAY_PER_REQUEST
+    AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      - AttributeName: organizationId
+        AttributeType: S
+    KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+    GlobalSecondaryIndexes:
+      - IndexName: orgId-index
+        KeySchema:
+          - AttributeName: organizationId
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+```
+
+### Username plugin
+
+The username plugin adds a `username` field to users and queries by username during sign-in. Add a GSI on `user.username` to avoid a full Scan on every login.
+
+**Required GSIs:**
+
+| Model | GSI | Hash Key | Projection |
+|---|---|---|---|
+| `user` | `username-index` | `username` | `ALL` |
+
+**Config snippet:**
+
+```ts
+indexes: {
+  user: {
+    username: { indexName: "username-index", hashKey: "username", projection: "ALL" },
+  },
+}
+```
+
+No additional tables. The `user` table's existing `id` PK is sufficient.
+
+### Passkey plugin
+
+The passkey plugin adds a `passkey` table with PK=`id`. No additional GSIs are required — the standard PK lookups cover all passkey operations (registration, authentication, listing by user's credential ID).
+
+**Required tables:**
+
+| Model | PK | Notes |
+|---|---|---|
+| `passkey` | `id` | Standard PK-only table |
+
+**Config snippet:**
+
+```ts
+tables: {
+  user:    "myapp-users",
+  session: "myapp-sessions",
+  account: "myapp-accounts",
+  verification: "myapp-verifications",
+  passkey: "myapp-passkeys",
+}
+```
+
+No `indexes` or `keySchemas` override needed.
+
+### Two-factor plugin
+
+The two-factor plugin adds a `twoFactor` table with PK=`id`. No additional GSIs are required.
+
+**Required tables:**
+
+| Model | PK | Notes |
+|---|---|---|
+| `twoFactor` | `id` | Standard PK-only table |
+
+**Config snippet:**
+
+```ts
+tables: {
+  user:    "myapp-users",
+  session: "myapp-sessions",
+  account: "myapp-accounts",
+  verification: "myapp-verifications",
+  twoFactor: "myapp-two-factor",
+}
+```
+
+No `indexes` or `keySchemas` override needed.
+
+---
+
 ## IAM policy
 
 Minimal IAM policy for the adapter:
@@ -848,6 +1080,153 @@ The `in` operator supports up to 100 values per clause in DynamoDB. The adapter 
 ### Transaction limits
 
 `TransactWriteItems` supports up to 100 actions and 4 MB aggregate. Auth transactions typically involve 2–5 items (well within limits).
+
+---
+
+## Migration from SQL Adapters
+
+If you're moving from one of Better Auth's SQL adapters (PostgreSQL, MySQL, SQLite), this section covers the differences that matter.
+
+### 1. Table provisioning
+
+SQL adapters auto-create tables via migrations. **DynamoDB requires explicit table creation** — the adapter never creates or alters tables. Use the CloudFormation or CDK snippets in the [Table setup](#table-setup) section as a starting point. Each core model needs its own table; GSIs must be declared at creation time (though you can add them to existing tables later).
+
+### 2. GSI requirement
+
+In SQL, `findFirst({ where: { email: "alice@example.com" } })` is instant — it's just a b-tree lookup on the indexed column. On DynamoDB, the same query **falls to a full Scan (Tier 3) unless you declare a GSI** for the `email` field:
+
+```ts
+// Without this, every email lookup scans the entire Users table.
+indexes: {
+  user: {
+    email: { indexName: "email-index", hashKey: "email" },
+  },
+}
+```
+
+The adapter's query planner will use the GSI automatically — `findOne({ email: "..." })` becomes a Tier-2 `Query` instead of a Tier-3 `Scan`. Check your app for every field queried in a `where` clause and add corresponding GSIs. The adapter's `debugLogs: true` will warn you about paths that hit Tier 3.
+
+### 3. Session PK difference
+
+| Adapter | Session PK | Why |
+|---|---|---|
+| SQL (default) | `id` | Auto-increment UUID |
+| **DynamoDB** | **`token`** | Hot path — every authenticated request validates session by token, not by id |
+
+This is a deliberate design choice for DynamoDB's access-pattern-first model. The session validation hot path (`findOne({ token })`) becomes a single-digit-ms `GetItem` without any GSI. 
+
+> **Enable cookie cache.** Set `session.cookieCache.maxAge` to 5 minutes so session validation reads a signed cookie instead of hitting DynamoDB on every request. This is the single biggest cost and latency lever — see [Performance Tuning](#performance-tuning).
+
+Sessions still have an `id` field, and an optional `by-id` GSI is available for admin panel queries.
+
+### 4. Date handling
+
+DynamoDB stores dates as **ISO 8601 strings** (`"2024-01-01T00:00:00.000Z"`), not native `Date` objects. The adapter handles round-trip serialization automatically:
+
+- **Writes:** `Date` objects in `create` / `update` payloads are converted to ISO strings before marshalling.
+- **Reads:** ISO strings in responses are converted back to `Date` objects.
+
+This is transparent in normal operation. Only matters if you read/write DynamoDB items directly (outside the adapter).
+
+### 5. Transaction differences
+
+| Feature | SQL | DynamoDB |
+|---|---|---|
+| Action limit | Unlimited | **100 per transaction** |
+| Read consistency | Read-modify-write inside tx | **Reads are non-transactional** (buffer-then-flush) |
+| Aggregate size | Unlimited | 4 MB total |
+| Rollback | `ROLLBACK` | Discard buffer on throw |
+
+Auth transactions are typically 2–5 actions, well within the 100-action limit. The main gotcha is that `tx.findOne()` inside a transaction sees the **pre-transaction** state, not intermediate writes.
+
+### Migration checklist
+
+- [ ] Create 4 DynamoDB tables (user, session, account, verification) with GSIs matching your queries
+- [ ] Add `emailLookups` table if using `enableEmailUniqueness`
+- [ ] Configure cookie cache (`session.cookieCache.maxAge: 5 * 60`)
+- [ ] Review all `findFirst` / `findMany` calls — ensure GSIs cover every queried field
+- [ ] Enable `debugLogs: true` during development to catch Tier-3 Scan paths
+
+---
+
+## Performance Tuning
+
+### Tier warning decoder
+
+When `debugLogs` is enabled, Tier-3 Scan warnings appear in your logs. Here's what each one means and the GSI you need:
+
+| Warning pattern | Problem | Fix |
+|---|---|---|
+| `findOne on user using Scan` | Querying a user by non-PK field (e.g. `name`, `role`) | Add a GSI for the queried field, or ensure the PK is in the `where` clause |
+| `findOne on session using Scan` | Session lookup not using `token` (PK) | Use `findOne({ token })` instead of `findOne({ id })`, or add `by-id` GSI |
+| `findMany on user using Scan with sortBy` | Sort by a field with no GSI sort key | Add a GSI with the sort field as `rangeKey` |
+| `update on user using Scan` | Update targeting a non-PK / non-GSI field | Add a GSI for the field used in the `where` clause |
+| `delete on user using Scan` | Delete targeting a non-PK / non-GSI field | Add a GSI for the field used in the `where` clause |
+| `count on user scanned N items` | `count()` with a broad or empty filter | Add a GSI for the filter field, or accept the Scan for infrequent queries |
+| `updateMany on user using Scan` | Bulk update targeting a non-indexed field | Add a GSI for the `where` field used in `updateMany` |
+
+### Cookie cache tuning
+
+Better Auth's `session.cookieCache` stores a signed JWT in the session cookie so the adapter can validate it without hitting DynamoDB. The `maxAge` field controls the tradeoff:
+
+```ts
+session: {
+  cookieCache: { enabled: true, maxAge: 5 * 60 }, // 5 minutes
+}
+```
+
+| `maxAge` | GetItem calls (per user per period) | Session invalidation delay | Best for |
+|---|---|---|---|
+| `30` (30s) | ~2/min | Near-instant | High-security apps |
+| `300` (5m) | ~0.2/min | Up to 5 min | **Default — recommended for most apps** |
+| `900` (15m) | ~0.07/min | Up to 15 min | Low-security, read-heavy |
+| `3600` (1h) | ~0.02/min | Up to 1 hour | Internal tools, dashboards |
+
+> **For sensitive endpoints** (password change, account deletion, email change), set `disableCookieCache: true` on the route to force a DynamoDB read and see the latest session state.
+
+### Cost-per-operation table
+
+DynamoDB on-demand pricing (us-east-1):
+
+| Operation | RCU / WCU | Cost per 1M ops | Notes |
+|---|---|---|---|
+| `GetItem` (≤4KB) | 0.5 RCU | $0.625 | Single-item PK lookup. Cookie cache eliminates most of these. |
+| `Query` (≤4KB) | 0.5 RCU per 4KB scanned | $0.625 | GSI Query — cost scales with items scanned, not returned. |
+| `Scan` (≤4KB) | 0.5 RCU per 4KB scanned | $0.625 per 4KB of table | Full table scan — avoid. GSIs prevent this. |
+| `Write` (≤1KB) | 1 WCU | $1.25 | PutItem, UpdateItem, DeleteItem, TransactWriteItems (2 WCU per action in tx) |
+| `Transactional write` | 2 WCU per action | $2.50 per 1M actions | TransactWriteItems charges 2x standard writes |
+
+**Estimated monthly cost for 10K DAU** (with cookie cache at 5 min, email uniqueness enabled):
+
+| Operation | Calls/user/day | Total/month | Cost |
+|---|---|---|---|
+| Session validation (cookie cache hits) | 0 | 0 | $0 |
+| Session validation (cache misses, ~1 per 5 min) | ~288 | 86M | ~$54 |
+| Sign-up (user create + email lookup) | 0.01 | 3K | <$0.01 |
+| Login (session create) | 1 | 300K | ~$0.38 |
+| Password reset (verification create + consume) | 0.02 | 6K | <$0.01 |
+| **Total** | | | **~$55/month** |
+
+Without cookie cache: 10K DAU × 100 requests/day × 0.5 RCU = 500M GetItem calls = ~$312/month. Cookie cache eliminates over 80% of read costs.
+
+### Concurrency tuning
+
+`updateManyConcurrency` controls how many parallel `UpdateItem` calls run when `updateMany` is called (non-batch mode):
+
+```ts
+dynamodbAdapter({
+  updateManyConcurrency: 10, // default
+})
+```
+
+| Value | Throughput | Safety | When to use |
+|---|---|---|---|
+| `5` | Low | Safest — low DDB table capacity | Low-capacity tables, on-demand-burst-limited |
+| `10` | Medium | **Default — balanced for most workloads** | General purpose |
+| `25` | High | Higher burst consumption | Batch jobs, high-capacity provisioned tables |
+| `50` | Very high | Risk of throttling | Internal tools, cron jobs with no concurrent user traffic |
+
+Higher values saturate the table's capacity faster. On on-demand mode, DynamoDB can double capacity once per 30 minutes — large `updateMany` calls may hit throttling if they exceed the doubled limit. For bulk operations on large datasets (>1000 items), use `unsafeBatchUpdate: true` with `BatchWriteItem` instead, which batches writes into 25-item chunks with automatic retry.
 
 ---
 

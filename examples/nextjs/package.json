@@ -1,0 +1,11 @@
+{
+  "name": "dynamodb-better-auth-nextjs-example",
+  "private": true,
+  "description": "Next.js app with Better Auth and DynamoDB adapter",
+  "scripts": {
+    "dev": "next dev",
+    "setup": "tsx setup-tables.ts",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  }
+}
