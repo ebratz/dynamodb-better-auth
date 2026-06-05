@@ -15,7 +15,6 @@
 
 import {
   BatchWriteCommand,
-  BatchGetCommand,
   GetCommand,
   QueryCommand,
   ScanCommand,
@@ -26,6 +25,7 @@ import { getKeySchema } from "../../helpers/key-builder";
 import { compactExpr } from "../../helpers/expression-names";
 import { getTableName } from "../client";
 import { resolveQueryPlan } from "../../helpers/query-planner";
+import { resolveKEYS_ONLY } from "../../helpers/batch-get";
 import { DynamoAdapterError } from "../../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -140,7 +140,7 @@ async function _findItems(
 
     // Follow-up BatchGetItem for KEYS_ONLY GSIs (chunked by 100)
     if (plan.needsFollowUpGetItem && items.length > 0) {
-      return _resolveKEYS_ONLY(
+      return resolveKEYS_ONLY(
         docClient,
         tableName,
         plan.followUpKeyFields ?? { pkField: schema.pkField, skField: schema.skField },
@@ -180,64 +180,6 @@ async function _findItems(
   } while (lastEvaluatedKey);
 
   return items;
-}
-
-/**
- * Resolves full items from a KEYS_ONLY GSI via BatchGetCommand,
- * chunked into batches of 100 (DynamoDB BatchGetItem limit).
- */
-async function _resolveKEYS_ONLY(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  followUpKeyFields: { pkField: string; skField?: string },
-  gsiItems: Record<string, any>[],
-): Promise<Record<string, any>[]> {
-  // Build keys from GSI items
-  const keys = gsiItems.map((item) => {
-    const key: Record<string, any> = { [followUpKeyFields.pkField]: item[followUpKeyFields.pkField] };
-    if (followUpKeyFields.skField && item[followUpKeyFields.skField] !== undefined) {
-      key[followUpKeyFields.skField] = item[followUpKeyFields.skField];
-    }
-    return key;
-  });
-
-  const fullItems: Record<string, any>[] = [];
-  const BATCH_SIZE = 100;
-
-  for (let i = 0; i < keys.length; i += BATCH_SIZE) {
-    const chunk = keys.slice(i, i + BATCH_SIZE);
-    let retries = 0;
-    let unprocessed = chunk;
-    let batchResults: Record<string, any>[] = [];
-
-    while (unprocessed.length > 0 && retries < 3) {
-      const result = await docClient.send(
-        new BatchGetCommand({
-          RequestItems: {
-            [tableName]: { Keys: unprocessed },
-          },
-        }),
-      );
-
-      const responses = (result.Responses as any)?.[tableName];
-      if (responses) batchResults.push(...responses);
-
-      const nextUnprocessed = (result.UnprocessedKeys as any)?.[tableName]?.Keys;
-      if (!nextUnprocessed || nextUnprocessed.length === 0) break;
-
-      unprocessed = nextUnprocessed;
-      retries++;
-      if (retries < 3) {
-        await new Promise((r) =>
-          setTimeout(r, Math.pow(2, retries - 1) * 100 + Math.random() * 50),
-        );
-      }
-    }
-
-    fullItems.push(...batchResults);
-  }
-
-  return fullItems;
 }
 
 async function _batchDeleteWithRetry(

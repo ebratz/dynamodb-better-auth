@@ -468,20 +468,9 @@ export function createTransactionWrapper(
         // Release email-lookup on consumeOne
         if (config.enableEmailUniqueness && model === "user") {
           hasEmailUniqueness = true;
-          if (item?.email) {
-            const emailTable = config.tables.emailLookups;
-            if (!emailTable) {
-              throw new DynamoAdapterError(
-                "MISSING_TABLE",
-                "enableEmailUniqueness requires tables.emailLookups to be configured",
-              );
-            }
-            writeBuffer.push({
-              Delete: {
-                TableName: emailTable,
-                Key: { email: (item.email as string).toLowerCase() },
-              },
-            });
+          const emailActions = buildEmailUniquenessActions("delete", config, { user: item ?? undefined });
+          for (const action of emailActions) {
+            writeBuffer.push(action);
           }
         }
 

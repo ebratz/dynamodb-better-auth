@@ -16,14 +16,13 @@
 import {
   UpdateCommand,
   GetCommand,
-  QueryCommand,
-  ScanCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { buildExpressionNames, compactExpr } from "../../helpers/expression-names";
+import { buildExpressionNames } from "../../helpers/expression-names";
 import { resolveQueryPlan } from "../../helpers/query-planner";
+import { resolveItemByPlan } from "../../helpers/resolve-item";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -71,7 +70,7 @@ export function updateMethod(
       key = plan.key!;
     } else {
       // Tier 2/3 (or incomplete Tier 1): find the item first
-      const item = await _resolveItemByPlan(
+      const item = await resolveItemByPlan(
         docClient,
         tableName,
         plan,
@@ -136,71 +135,4 @@ export function updateMethod(
   };
 }
 
-// ── Internal helpers ───────────────────────────────────────────
 
-/**
- * Finds a single item using the plan returned by resolveQueryPlan.
- * Handles Tier 2 (GSI Query) and Tier 3 (Scan), plus KEYS_ONLY
- * follow-up GetItem for sparse GSI projections.
- */
-async function _resolveItemByPlan(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  plan: ReturnType<typeof resolveQueryPlan>,
-  config: DynamoDBAdapterConfig,
-  model: string,
-): Promise<Record<string, any> | null> {
-  // ── Tier 2: GSI Query ─────────────────────────────────────
-  if (plan.tier === 2 && plan.operation === "query") {
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: tableName,
-        IndexName: plan.indexName!,
-        KeyConditionExpression: plan.keyCondition!,
-        FilterExpression: plan.filterExpression || undefined,
-        ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
-        Limit: 1,
-      } as any),
-    );
-
-    const items = (result.Items ?? []) as Record<string, any>[];
-
-    if (plan.needsFollowUpGetItem && items.length > 0) {
-      const gsiItem = items[0]!;
-      const fk = plan.followUpKeyFields!;
-      const key: Record<string, any> = { [fk.pkField]: gsiItem[fk.pkField] };
-      if (fk.skField && gsiItem[fk.skField] !== undefined) {
-        key[fk.skField] = gsiItem[fk.skField];
-      }
-      const fuResult = await docClient.send(
-        new GetCommand({ TableName: tableName, Key: key }),
-      );
-      return (fuResult.Item as any) ?? null;
-    }
-
-    return items[0] ?? null;
-  }
-
-  // ── Tier 3: Scan ──────────────────────────────────────────
-  if (config.debugLogs) {
-    const debug =
-      typeof config.debugLogs === "object" ? config.debugLogs : {};
-    if (debug.update !== false) {
-      console.warn(
-        `[dynamodb-adapter] update on ${model} using Scan (Tier 3). ` +
-          `Consider adding a GSI for the queried field(s).`,
-      );
-    }
-  }
-
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: tableName,
-      FilterExpression: plan.filterExpression || undefined,
-      ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
-      Limit: 1,
-    } as any),
-  );
-
-  return ((result.Items as any)?.[0] as any) ?? null;
-}

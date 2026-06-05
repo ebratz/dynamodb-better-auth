@@ -19,13 +19,39 @@ import {
   GetCommand,
   QueryCommand,
   ScanCommand,
-  BatchGetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { compactExpr } from "../../helpers/expression-names";
 import { resolveQueryPlan } from "../../helpers/query-planner";
+import { matchesClientFilters } from "../../helpers/resolve-item";
+import { resolveKEYS_ONLY } from "../../helpers/batch-get";
 import { UnsupportedOptionError } from "../../errors";
+
+// ── Internal helpers ───────────────────────────────────────────
+
+/**
+ * Look up the GSI range key for a given model + indexName.
+ * Used to determine whether sortBy can use native ScanIndexForward.
+ */
+function findGsiRangeKey(
+  model: string,
+  indexName: string,
+  config: DynamoDBAdapterConfig,
+): string | undefined {
+  const modelIndexes = config.indexes?.[model];
+  if (!modelIndexes) return undefined;
+  for (const [, fieldIndexes] of Object.entries(modelIndexes)) {
+    for (const gsi of Object.values(fieldIndexes)) {
+      if ((gsi as any).indexName === indexName) return (gsi as any).rangeKey;
+    }
+  }
+  return undefined;
+}
+
+// ── Old helpers removed ────────────────────────────────────────
+// matchesClientFilters → shared via resolve-item.ts
+// resolveKEYS_ONLY / _batchGetWithRetry → shared via batch-get.ts
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -133,7 +159,7 @@ export function findManyMethod(
 
       // Follow-up BatchGetItem for KEYS_ONLY GSIs
       if (plan.needsFollowUpGetItem && items.length > 0) {
-        return resolveKEYS_ONLY(docClient, tableName, plan, items);
+        return resolveKEYS_ONLY(docClient, tableName, plan.followUpKeyFields!, items);
       }
 
       return items;
@@ -224,134 +250,4 @@ export function findManyMethod(
 
 // ── Internal helpers ───────────────────────────────────────────
 
-/**
- * Client-side filter evaluation for Tier 1 GetItem results.
- */
-function matchesClientFilters(
-  item: Record<string, any>,
-  filters: Array<{ field: string; operator: string; value: any }>,
-): boolean {
-  for (const f of filters) {
-    const itemVal = item[f.field];
-    switch (f.operator) {
-      case "eq":          if (itemVal !== f.value) return false; break;
-      case "ne":          if (itemVal === f.value) return false; break;
-      case "gt":          if (!(itemVal > f.value)) return false; break;
-      case "gte":         if (!(itemVal >= f.value)) return false; break;
-      case "lt":          if (!(itemVal < f.value)) return false; break;
-      case "lte":         if (!(itemVal <= f.value)) return false; break;
-      case "in": {
-        const arr = Array.isArray(f.value) ? f.value : [f.value];
-        if (!arr.includes(itemVal)) return false;
-        break;
-      }
-      case "not_in": {
-        const arr = Array.isArray(f.value) ? f.value : [f.value];
-        if (arr.includes(itemVal)) return false;
-        break;
-      }
-      case "contains": {
-        if (typeof itemVal !== "string" || !itemVal.includes(String(f.value))) return false;
-        break;
-      }
-      case "starts_with": {
-        if (typeof itemVal !== "string" || !itemVal.startsWith(String(f.value))) return false;
-        break;
-      }
-      default: return false;
-    }
-  }
-  return true;
-}
 
-/**
- * Look up the GSI range key for a given model + indexName.
- * Used to determine whether sortBy can use native ScanIndexForward.
- */
-function findGsiRangeKey(
-  model: string,
-  indexName: string,
-  config: DynamoDBAdapterConfig,
-): string | undefined {
-  const modelIndexes = config.indexes?.[model];
-  if (!modelIndexes) return undefined;
-  for (const [, gsi] of Object.entries(modelIndexes)) {
-    if (gsi.indexName === indexName) return gsi.rangeKey;
-  }
-  return undefined;
-}
-
-/**
- * Resolve full items for KEYS_ONLY GSI results via BatchGetItem.
- *
- * Keys are chunked into batches of 100 (DynamoDB limit).
- * UnprocessedKeys are retried with exponential backoff (max 3 attempts).
- */
-async function resolveKEYS_ONLY(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  plan: { followUpKeyFields?: { pkField: string; skField?: string } },
-  items: Record<string, any>[],
-): Promise<Record<string, any>[]> {
-  // Build keys from GSI results
-  const keys = items.map(item => {
-    const k: Record<string, any> = { [plan.followUpKeyFields!.pkField]: item[plan.followUpKeyFields!.pkField] };
-    if (plan.followUpKeyFields?.skField && item[plan.followUpKeyFields.skField] !== undefined) {
-      k[plan.followUpKeyFields.skField] = item[plan.followUpKeyFields.skField];
-    }
-    return k;
-  });
-
-  // BatchGetItem in chunks of 100, with UnprocessedKeys retry
-  const results: Record<string, any>[] = [];
-  for (let i = 0; i < keys.length; i += 100) {
-    const chunk = keys.slice(i, i + 100);
-    const resolved = await _batchGetWithRetry(docClient, tableName, chunk);
-    results.push(...resolved);
-  }
-
-  return results;
-}
-
-const MAX_RETRY_ATTEMPTS = 3;
-
-async function _batchGetWithRetry(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  keys: Record<string, any>[],
-  attempt: number = 1,
-): Promise<Record<string, any>[]> {
-  const result = await docClient.send(
-    new BatchGetCommand({
-      RequestItems: {
-        [tableName]: { Keys: keys },
-      },
-    }),
-  );
-
-  const responses: Record<string, any>[] = (result.Responses as any)?.[tableName] ?? [];
-
-  // Check for UnprocessedKeys and retry with exponential backoff
-  const unprocessed = (result.UnprocessedKeys as any)?.[tableName]?.Keys;
-  if (unprocessed && unprocessed.length > 0 && attempt < MAX_RETRY_ATTEMPTS) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.pow(2, attempt - 1) * 100 + Math.random() * 50),
-    );
-    const retryResults = await _batchGetWithRetry(
-      docClient,
-      tableName,
-      unprocessed,
-      attempt + 1,
-    );
-    responses.push(...retryResults);
-  } else if (unprocessed && unprocessed.length > 0) {
-    // Max attempts reached — some items were not retrieved.
-    // Return what we have; this is best-effort.
-    if (attempt === MAX_RETRY_ATTEMPTS) {
-      // Could log a warning here, but the SDK interface is synchronous.
-      // Worst case: caller gets fewer items than expected.
-    }
-  }
-
-  return responses;
-}

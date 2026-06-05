@@ -21,13 +21,13 @@ import {
   QueryCommand,
   ScanCommand,
   BatchWriteCommand,
-  GetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { buildExpressionNames, compactExpr } from "../../helpers/expression-names";
-import { resolveFilter } from "../../helpers/query-planner";
+import { resolveQueryPlan } from "../../helpers/query-planner";
+import { resolveKEYS_ONLY } from "../../helpers/batch-get";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -90,9 +90,10 @@ export function updateManyMethod(
 // ── Item lookup ─────────────────────────────────────────────────
 
 /**
- * Finds all items matching the where clause.
- * Tier 2: GSI Query when an eq operator matches a declared GSI hash key.
- * Tier 3: Scan with FilterExpression via resolveFilter.
+ * Finds all items matching the where clause via centralized resolveQueryPlan.
+ * Tier 2: GSI Query with pagination.
+ * Tier 3: Scan with FilterExpression.
+ * KEYS_ONLY GSI follow-up via resolveKEYS_ONLY (BatchGetCommand, chunked).
  */
 async function _findItems(
   docClient: DynamoDBDocumentClient,
@@ -107,92 +108,29 @@ async function _findItems(
     return _scanAll(docClient, tableName);
   }
 
-  // ── Tier 2: GSI check ────────────────────────────────────
-  const nonOr = where.filter(
-    (w: Where) => !w.connector || w.connector !== "OR",
-  );
-  const modelIndexes = config.indexes?.[model];
+  const plan = resolveQueryPlan(where, model, config);
 
-  if (modelIndexes && nonOr.length > 0) {
-    for (const w of nonOr) {
-      const gsiDecl = modelIndexes[w.field];
-      if (gsiDecl && (!w.operator || w.operator === "eq")) {
-        // Build the GSI Query plan
-        const names: Record<string, string> = {};
-        const values: Record<string, any> = {};
+  // ── Tier 2: GSI Query ────────────────────────────────────
+  if (plan.tier === 2 && plan.operation === "query") {
+    const items = await _queryAll(docClient, tableName, {
+      indexName: plan.indexName!,
+      keyCondition: plan.keyCondition!,
+      filterExpression: plan.filterExpression,
+      expressionAttributeNames: plan.expressionAttributeNames,
+      expressionAttributeValues: plan.expressionAttributeValues,
+    });
 
-        const fieldName = (f: string, i: number) => {
-          const nk = `#n${i}`;
-          names[nk] = f;
-          return nk;
-        };
-        const valRef = (v: any, i: number) => {
-          const vk = `:v${i}`;
-          values[vk] = v;
-          return vk;
-        };
-
-        const fRef = fieldName(w.field, Object.keys(names).length);
-        const vRef = valRef(w.value, Object.keys(values).length);
-
-        let sortCondition = "";
-        if (gsiDecl.rangeKey) {
-          const skW = nonOr.find(
-            (rw: Where) => rw.field === gsiDecl.rangeKey && rw !== w,
-          );
-          if (skW) {
-            const skRef = fieldName(gsiDecl.rangeKey, Object.keys(names).length);
-            const skValRef = valRef(skW.value, Object.keys(values).length);
-            sortCondition = ` AND ${skRef} = ${skValRef}`;
-          }
-        }
-
-        // Remaining clauses become FilterExpression via resolveFilter
-        const rest = nonOr.filter(
-          (rw: Where) => rw !== w && rw.field !== gsiDecl.rangeKey,
-        );
-        const ors = where.filter((rw: Where) => rw.connector === "OR");
-        const extra = [...rest, ...ors];
-
-        let filterExpr: string | undefined;
-        if (extra.length > 0) {
-          const f = resolveFilter(extra, model, config);
-          if (f) {
-            Object.assign(names, f.expressionAttributeNames);
-            Object.assign(values, f.expressionAttributeValues);
-            filterExpr = f.expression;
-          }
-        }
-
-        const items = await _queryAll(docClient, tableName, {
-          indexName: gsiDecl.indexName,
-          keyCondition: `${fRef} = ${vRef}${sortCondition}`,
-          filterExpression: filterExpr,
-          expressionAttributeNames: names,
-          expressionAttributeValues: values,
-        });
-
-        // KEYS_ONLY follow-up
-        if (gsiDecl.projection === "KEYS_ONLY" && items.length > 0) {
-          const fullItems: Record<string, any>[] = [];
-          for (const gsiItem of items) {
-            const key: Record<string, any> = { [schema.pkField]: gsiItem[schema.pkField] };
-            if (schema.skField && gsiItem[schema.skField] !== undefined) {
-              key[schema.skField] = gsiItem[schema.skField];
-            }
-            const fuResult = await docClient.send(
-              new GetCommand({ TableName: tableName, Key: key }),
-            );
-            if (fuResult.Item) {
-              fullItems.push(fuResult.Item as any);
-            }
-          }
-          return fullItems;
-        }
-
-        return items;
-      }
+    // KEYS_ONLY follow-up
+    if (plan.needsFollowUpGetItem && plan.followUpKeyFields && items.length > 0) {
+      return resolveKEYS_ONLY(
+        docClient,
+        tableName,
+        plan.followUpKeyFields,
+        items,
+      );
     }
+
+    return items;
   }
 
   // ── Tier 3: Scan ─────────────────────────────────────────
@@ -203,13 +141,12 @@ async function _findItems(
     );
   }
 
-  const filter = resolveFilter(where, model, config);
   return _scanAll(
     docClient,
     tableName,
-    filter?.expression,
-    filter?.expressionAttributeNames,
-    filter?.expressionAttributeValues,
+    plan.filterExpression,
+    plan.expressionAttributeNames,
+    plan.expressionAttributeValues,
   );
 }
 

@@ -5,21 +5,21 @@
  *
  * - Tier 1: PK (or PK+SK) equality → DeleteCommand with
  *   ReturnValues: "ALL_OLD".
- * - Tier 2: Query the GSI with Limit: 1, extract the PK (+SK if composite),
- *   then DeleteCommand on the resolved key with ReturnValues: "ALL_OLD".
+ * - Tier 2: Query the GSI with Limit: 1 via resolveItemByPlan,
+ *   extract key, then DeleteCommand with ReturnValues: "ALL_OLD".
  * - Tier 3: rejected → throw InvalidWhereError (consumeOne requires PK or
  *   indexed equality — Gap A fix).
  *
  * Returns the deleted item's Attributes, or null if no item matched.
  */
 
-import { DeleteCommand, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { compactExpr } from "../../helpers/expression-names";
 import { getTableName } from "../client";
 import { resolveQueryPlan } from "../../helpers/query-planner";
+import { resolveItemByPlan } from "../../helpers/resolve-item";
 import { InvalidWhereError } from "../../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,40 +54,18 @@ export function consumeOneMethod(
       }
       key = plan.key!;
     } else if (plan.tier === 2) {
-      // Tier 2: Query GSI, Limit 1, extract full key
-      const result = await docClient.send(
-        new QueryCommand({
-          TableName: tableName,
-          IndexName: plan.indexName!,
-          KeyConditionExpression: plan.keyCondition!,
-          FilterExpression: plan.filterExpression || undefined,
-          ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
-          Limit: 1,
-        } as any),
+      // Tier 2: find the item via shared resolver, then extract key
+      const item = await resolveItemByPlan(
+        docClient,
+        tableName,
+        plan,
+        config,
+        model,
       );
-
-      const items = result.Items ?? [];
-      if (items.length === 0) return null;
-
-      // KEYS_ONLY follow-up — use GetCommand for single item (not worth BatchGet for 1 item)
-      if (plan.needsFollowUpGetItem) {
-        const gsiItem = items[0]! as Record<string, any>;
-        const fk = plan.followUpKeyFields!;
-        const fuKey: Record<string, any> = { [fk.pkField]: gsiItem[fk.pkField] };
-        if (fk.skField && gsiItem[fk.skField] !== undefined) {
-          fuKey[fk.skField] = gsiItem[fk.skField];
-        }
-        const fuResult = await docClient.send(
-          new GetCommand({ TableName: tableName, Key: fuKey }),
-        );
-        if (!fuResult.Item) return null;
-        key = fuKey;
-      } else {
-        const item = items[0]! as Record<string, any>;
-        key = { [schema.pkField]: item[schema.pkField] };
-        if (schema.skField && item[schema.skField] !== undefined) {
-          key[schema.skField] = item[schema.skField];
-        }
+      if (!item) return null;
+      key = { [schema.pkField]: item[schema.pkField] };
+      if (schema.skField && item[schema.skField] !== undefined) {
+        key[schema.skField] = item[schema.skField];
       }
     } else {
       // Tier 3: rejected — consumeOne requires PK or indexed equality
