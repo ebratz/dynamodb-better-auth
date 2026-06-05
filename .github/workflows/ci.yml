@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies (no lockfile — works around npm bug #4828)
         run: |
           rm -f package-lock.json
-          npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --legacy-peer-deps
       - run: npx tsc --noEmit
 
   unit-tests:
@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies (no lockfile — works around npm bug #4828)
         run: |
           rm -f package-lock.json
-          npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --legacy-peer-deps
       - run: npx vitest run --exclude 'test/adapter.test.ts'
 
   integration-tests:
@@ -64,7 +64,7 @@ jobs:
       - name: Install dependencies (no lockfile — works around npm bug #4828)
         run: |
           rm -f package-lock.json
-          npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --legacy-peer-deps
       - name: Create DynamoDB tables
         run: |
           # Users
@@ -168,14 +168,14 @@ jobs:
       - name: Install dependencies (no lockfile — works around npm bug #4828)
         run: |
           rm -f package-lock.json
-          npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --legacy-peer-deps
       - run: npm run build
       - run: npm pack
       - name: Verify package imports from a consumer
         run: |
           mkdir /tmp/consumer && cd /tmp/consumer
           npm init -y
-          npm install $GITHUB_WORKSPACE/ebratz-dynamodb-better-auth-*.tgz \
+          npm install --legacy-peer-deps $GITHUB_WORKSPACE/ebratz-dynamodb-better-auth-*.tgz \
                      @aws-sdk/client-dynamodb \
                      @aws-sdk/lib-dynamodb \
                      @aws-sdk/util-dynamodb \
