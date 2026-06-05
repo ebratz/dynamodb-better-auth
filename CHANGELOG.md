@@ -4,6 +4,19 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.4...v0.1.5) (2026-06-05)
+
+
+### Bug Fixes
+
+* **ci:** add --legacy-peer-deps to resolve AWS SDK peer dependency conflicts ([be01d20](https://github.com/ebratz/dynamodb-better-auth/commit/be01d2017942c66a62323fb69d6db8e20436e8c0))
+
+
+### Refactoring
+
+* eliminate remaining duplication with shared helpers ([2f73084](https://github.com/ebratz/dynamodb-better-auth/commit/2f73084b5977e0bd591e4dc34a06156659ba4644))
+* implement all 5 SOLID audit fixes via parallel agents ([ee6664a](https://github.com/ebratz/dynamodb-better-auth/commit/ee6664afce2062dafb9ed4374a06f40bb267a79a))
+
 ## [0.1.4](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.3...v0.1.4) (2026-06-05)
 
 
