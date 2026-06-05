@@ -16,17 +16,16 @@
 import {
   BatchWriteCommand,
   GetCommand,
-  QueryCommand,
-  ScanCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { compactExpr } from "../../helpers/expression-names";
 import { getTableName } from "../client";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveKEYS_ONLY } from "../../helpers/batch-get";
+import { fetchAllByPlan, type FetchAllPlan } from "../../helpers/fetch-all";
 import { DynamoAdapterError } from "../../errors";
+import { shouldLog } from "../../helpers/debug-log";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -120,23 +119,7 @@ async function _findItems(
 
   // ── Tier 2: Query on GSI ─────────────────────────────────
   if (plan.operation === "query") {
-    const items: Record<string, any>[] = [];
-    let lastEvaluatedKey: Record<string, any> | undefined;
-
-    do {
-      const result = await docClient.send(
-        new QueryCommand({
-          TableName: tableName,
-          IndexName: plan.indexName!,
-          KeyConditionExpression: plan.keyCondition!,
-          FilterExpression: plan.filterExpression || undefined,
-          ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
-          ExclusiveStartKey: lastEvaluatedKey,
-        } as any),
-      );
-      if (result.Items) items.push(...(result.Items as any[]));
-      lastEvaluatedKey = result.LastEvaluatedKey;
-    } while (lastEvaluatedKey);
+    const items = await fetchAllByPlan(docClient, tableName, plan as any);
 
     // Follow-up BatchGetItem for KEYS_ONLY GSIs (chunked by 100)
     if (plan.needsFollowUpGetItem && items.length > 0) {
@@ -152,34 +135,14 @@ async function _findItems(
   }
 
   // ── Tier 3: Scan ─────────────────────────────────────────
-  if (config.debugLogs && plan.filterExpression) {
-    const debug =
-      typeof config.debugLogs === "object" ? config.debugLogs : {};
-    if (debug.deleteMany !== false) {
-      console.warn(
-        `[dynamodb-adapter] deleteMany on ${model} using Scan (Tier 3). ` +
-          `Consider adding a GSI for the queried field(s).`,
-      );
-    }
+  if (shouldLog(config, "deleteMany") && plan.filterExpression) {
+    console.warn(
+      `[dynamodb-adapter] deleteMany on ${model} using Scan (Tier 3). ` +
+        `Consider adding a GSI for the queried field(s).`,
+    );
   }
 
-  const items: Record<string, any>[] = [];
-  let lastEvaluatedKey: Record<string, any> | undefined;
-
-  do {
-    const result = await docClient.send(
-      new ScanCommand({
-        TableName: tableName,
-        FilterExpression: plan.filterExpression || undefined,
-        ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
-        ExclusiveStartKey: lastEvaluatedKey,
-      } as any),
-    );
-    if (result.Items) items.push(...(result.Items as any[]));
-    lastEvaluatedKey = result.LastEvaluatedKey;
-  } while (lastEvaluatedKey);
-
-  return items;
+  return fetchAllByPlan(docClient, tableName, plan as FetchAllPlan);
 }
 
 async function _batchDeleteWithRetry(

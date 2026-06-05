@@ -10,6 +10,7 @@ import { QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../types";
 import { compactExpr } from "./expression-names";
+import { shouldLog } from "./debug-log";
 import type { resolveQueryPlan } from "./query-planner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -61,15 +62,11 @@ export async function resolveItemByPlan(
   }
 
   // ── Tier 3: Scan ──────────────────────────────────────────
-  if (config.debugLogs) {
-    const debug =
-      typeof config.debugLogs === "object" ? config.debugLogs : {};
-    if (debug[model] !== false) {
-      console.warn(
-        `[dynamodb-adapter] ${model} using Scan (Tier 3). ` +
-          `Consider adding a GSI for the queried field(s).`,
-      );
-    }
+  if (shouldLog(config, model)) {
+    console.warn(
+      `[dynamodb-adapter] ${model} using Scan (Tier 3). ` +
+        `Consider adding a GSI for the queried field(s).`,
+    );
   }
 
   const result = await docClient.send(

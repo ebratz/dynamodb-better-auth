@@ -13,6 +13,8 @@ import { ScanCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { resolveFilter } from "../../helpers/query-planner";
+import { getTableName } from "../client";
+import { shouldLog } from "../../helpers/debug-log";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -25,10 +27,7 @@ export function countMethod(
     model: string;
     where?: Where[];
   }): Promise<number> => {
-    const tableName = config.tables[args.model];
-    if (!tableName) {
-      throw new Error(`No table configured for model "${args.model}"`);
-    }
+    const tableName = getTableName(args.model, config);
 
     const threshold = config.warnOnLargeCount ?? 10_000;
     let totalCount = 0;
@@ -62,15 +61,11 @@ export function countMethod(
     } while (lastEvaluatedKey);
 
     // Warn on large scans
-    if (threshold > 0 && totalScanned > threshold && config.debugLogs) {
-      const debug = typeof config.debugLogs === "object" ? config.debugLogs : {};
-      const logCount = debug.count !== false;
-      if (logCount) {
-        console.warn(
-          `[dynamodb-adapter] count() scanned ${totalScanned} items on ${tableName} ` +
-          `(threshold: ${threshold}). Consider adding a counter pattern for large tables.`,
-        );
-      }
+    if (threshold > 0 && totalScanned > threshold && shouldLog(config, "count")) {
+      console.warn(
+        `[dynamodb-adapter] count() scanned ${totalScanned} items on ${tableName} ` +
+        `(threshold: ${threshold}). Consider adding a counter pattern for large tables.`,
+      );
     }
 
     return totalCount;

@@ -18,16 +18,17 @@
 
 import {
   UpdateCommand,
-  QueryCommand,
-  ScanCommand,
   BatchWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { buildExpressionNames, compactExpr } from "../../helpers/expression-names";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveKEYS_ONLY } from "../../helpers/batch-get";
+import { fetchAllByPlan } from "../../helpers/fetch-all";
+import { buildUpdateExpression } from "../../helpers/update-item";
+import { shouldLog } from "../../helpers/debug-log";
+import { getTableName } from "../client";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -42,10 +43,7 @@ export function updateManyMethod(
     update: Record<string, any>;
   }): Promise<number> => {
     const { model, where, update } = args;
-    const tableName = config.tables[model];
-    if (!tableName) {
-      throw new Error(`No table configured for model "${model}"`);
-    }
+    const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
     // ── Strip PK/SK fields from update payload ─────────────────
@@ -105,20 +103,18 @@ async function _findItems(
 ): Promise<Record<string, any>[]> {
   // No where clause → full table Scan
   if (!where || where.length === 0) {
-    return _scanAll(docClient, tableName);
+    return fetchAllByPlan(docClient, tableName, {
+      operation: "scan",
+      expressionAttributeNames: {},
+      expressionAttributeValues: {},
+    });
   }
 
   const plan = resolveQueryPlan(where, model, config);
 
   // ── Tier 2: GSI Query ────────────────────────────────────
   if (plan.tier === 2 && plan.operation === "query") {
-    const items = await _queryAll(docClient, tableName, {
-      indexName: plan.indexName!,
-      keyCondition: plan.keyCondition!,
-      filterExpression: plan.filterExpression,
-      expressionAttributeNames: plan.expressionAttributeNames,
-      expressionAttributeValues: plan.expressionAttributeValues,
-    });
+    const items = await fetchAllByPlan(docClient, tableName, plan as any);
 
     // KEYS_ONLY follow-up
     if (plan.needsFollowUpGetItem && plan.followUpKeyFields && items.length > 0) {
@@ -134,87 +130,27 @@ async function _findItems(
   }
 
   // ── Tier 3: Scan ─────────────────────────────────────────
-  if (config.debugLogs) {
+  if (shouldLog(config, "updateMany")) {
     console.warn(
       `[dynamodb-adapter] updateMany on ${model} using Scan (Tier 3). ` +
         `Consider adding a GSI for the queried field(s).`,
     );
   }
 
-  return _scanAll(
-    docClient,
-    tableName,
-    plan.filterExpression,
-    plan.expressionAttributeNames,
-    plan.expressionAttributeValues,
-  );
-}
-
-// ── Paginated helpers ───────────────────────────────────────────
-
-async function _queryAll(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  params: {
-    indexName: string;
-    keyCondition: string;
-    filterExpression?: string;
-    expressionAttributeNames: Record<string, string>;
-    expressionAttributeValues: Record<string, any>;
-  },
-): Promise<Record<string, any>[]> {
-  const items: Record<string, any>[] = [];
-  let lastKey: Record<string, any> | undefined;
-
-  do {
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: tableName,
-        IndexName: params.indexName,
-        KeyConditionExpression: params.keyCondition,
-        FilterExpression: params.filterExpression || undefined,
-        ...compactExpr(params.expressionAttributeNames, params.expressionAttributeValues),
-        ExclusiveStartKey: lastKey,
-      } as any),
-    );
-    if (result.Items) items.push(...(result.Items as any[]));
-    lastKey = result.LastEvaluatedKey;
-  } while (lastKey);
-
-  return items;
-}
-
-async function _scanAll(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  filterExpression?: string,
-  names?: Record<string, string>,
-  values?: Record<string, any>,
-): Promise<Record<string, any>[]> {
-  const items: Record<string, any>[] = [];
-  let lastKey: Record<string, any> | undefined;
-
-  do {
-    const result = await docClient.send(
-      new ScanCommand({
-        TableName: tableName,
-        ...(filterExpression
-          ? { FilterExpression: filterExpression }
-          : {}),
-        ...(names ? { ExpressionAttributeNames: names } : {}),
-        ...(values ? { ExpressionAttributeValues: values } : {}),
-        ExclusiveStartKey: lastKey,
-      } as any),
-    );
-    if (result.Items) items.push(...(result.Items as any[]));
-    lastKey = result.LastEvaluatedKey;
-  } while (lastKey);
-
-  return items;
+  return fetchAllByPlan(docClient, tableName, plan as any);
 }
 
 // ── Item update ─────────────────────────────────────────────────
 
+/**
+ * Update a single item via UpdateCommand with safety guards.
+ *
+ * - Strips PK/SK fields from update payload (shared helper).
+ * - Converts Date → ISO string (shared helper).
+ * - Adds ConditionExpression (attribute_exists) to prevent upsert
+ *   on items deleted between the findMany and individual UpdateItem.
+ * - ConditionalCheckFailedException → returns false (skip, don't throw).
+ */
 async function _updateOne(
   docClient: DynamoDBDocumentClient,
   tableName: string,
@@ -225,30 +161,32 @@ async function _updateOne(
   const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
   if (schema.skField) key[schema.skField] = item[schema.skField!];
 
-  const { names: attrNames, toRef, toValueRef } = buildExpressionNames(
-    Object.keys(update),
+  const { setClauses, attrNames, attrValues } = buildUpdateExpression(
+    update,
+    schema.pkField,
+    schema.skField,
   );
-  const attrValues: Record<string, any> = {};
-  const setClauses: string[] = [];
 
-  for (const field of Object.keys(update)) {
-    const ref = toRef(field);
-    const valRef = toValueRef();
-    setClauses.push(`${ref} = ${valRef}`);
-    attrValues[valRef] = update[field];
+  if (setClauses.length === 0) return false;
+
+  try {
+    await docClient.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: key,
+        UpdateExpression: `SET ${setClauses.join(", ")}`,
+        ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
+        ExpressionAttributeValues: attrValues,
+        ConditionExpression: "attribute_exists(#pk)",
+      }),
+    );
+    return true;
+  } catch (err: any) {
+    if (err.name === "ConditionalCheckFailedException") {
+      return false;
+    }
+    throw err;
   }
-
-  await docClient.send(
-    new UpdateCommand({
-      TableName: tableName,
-      Key: key,
-      UpdateExpression: `SET ${setClauses.join(", ")}`,
-      ExpressionAttributeNames: attrNames,
-      ExpressionAttributeValues: attrValues,
-    }),
-  );
-
-  return true;
 }
 
 // ── Batch Put (unsafeBatchUpdate) ───────────────────────────────
@@ -260,7 +198,7 @@ async function _batchPutUpdate(
   update: Record<string, any>,
   config: DynamoDBAdapterConfig,
 ): Promise<number> {
-  if (config.debugLogs) {
+  if (shouldLog(config, "updateMany")) {
     console.warn(
       `[dynamodb-adapter] updateMany using unsafeBatchUpdate — ` +
         `full-item overwrite (last-write-wins).`,

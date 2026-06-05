@@ -14,6 +14,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { buildExpressionNames } from "../../helpers/expression-names";
+import { sanitizeForWrite } from "../../helpers/update-item";
 import { DynamoAdapterError } from "../../errors";
 import { createUserWithEmailUniqueness } from "../../email-uniqueness";
 
@@ -50,10 +51,7 @@ export function createMethod(
     const placeholder = placeholderKeys.length > 0 ? placeholderKeys[0]! : "#n0";
 
     // Convert Date → ISO string for DocumentClient marshalling
-    const item: Record<string, any> = {};
-    for (const [k, v] of Object.entries(data)) {
-      item[k] = v instanceof Date ? v.toISOString() : v;
-    }
+    const item = sanitizeForWrite(data);
 
     try {
       await docClient.send(

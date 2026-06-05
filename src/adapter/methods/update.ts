@@ -20,9 +20,10 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
-import { buildExpressionNames } from "../../helpers/expression-names";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan } from "../../helpers/resolve-item";
+import { buildUpdateExpression } from "../../helpers/update-item";
+import { getTableName } from "../client";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -37,22 +38,11 @@ export function updateMethod(
     update: Record<string, any>;
   }): Promise<Record<string, any> | null> => {
     const { model, where, update } = args;
-    const tableName = config.tables[model];
-    if (!tableName) {
-      throw new Error(`No table configured for model "${model}"`);
-    }
+    const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
     // ── Resolve plan via centralized planner ───────────────────
     const plan = resolveQueryPlan(where, model, config);
-
-    // ── Strip PK/SK fields from update payload ─────────────────
-    // DynamoDB rejects UpdateExpression on key attributes.
-    const updateData = { ...update };
-    delete updateData[schema.pkField];
-    if (schema.skField) {
-      delete updateData[schema.skField];
-    }
 
     // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
@@ -84,20 +74,13 @@ export function updateMethod(
       }
     }
 
-    // ── Build UpdateExpression ─────────────────────────────────
-    const { names: attrNames, toRef, toValueRef } = buildExpressionNames(
-      Object.keys(updateData),
+    // ── Build UpdateExpression via shared helper ───────────────
+    // Strips PK/SK fields, converts Date → ISO, returns #nX/:vN placeholders.
+    const { setClauses, attrNames, attrValues } = buildUpdateExpression(
+      update,
+      schema.pkField,
+      schema.skField,
     );
-    const attrValues: Record<string, any> = {};
-    const setClauses: string[] = [];
-
-    for (const field of Object.keys(updateData)) {
-      const ref = toRef(field);
-      const valRef = toValueRef();
-      setClauses.push(`${ref} = ${valRef}`);
-      const rawVal = updateData[field];
-      attrValues[valRef] = rawVal instanceof Date ? rawVal.toISOString() : rawVal;
-    }
 
     if (setClauses.length === 0) {
       // Nothing to update — return the item as-is
@@ -109,8 +92,8 @@ export function updateMethod(
 
     // ── Execute UpdateItem ─────────────────────────────────────
     // ConditionExpression (#pk) guards against upsert on missing
-    // items. #pk is distinct from buildExpressionNames' #nX
-    // placeholders since we stripped PK/SK from updateData above.
+    // items. #pk is distinct from buildUpdateExpression's #nX
+    // placeholders since PK/SK were stripped above.
     try {
       const result = await docClient.send(
         new UpdateCommand({

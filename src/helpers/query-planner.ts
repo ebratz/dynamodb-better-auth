@@ -13,6 +13,7 @@
 import type { DynamoDBAdapterConfig, QueryPlan } from "../types";
 import { getKeySchema } from "./key-builder";
 import { convertWhereClause } from "./where-converter";
+import { DynamoAdapterError } from "../errors";
 
 // ── Where clause shape ─────────────────────────────────────────
 
@@ -77,7 +78,10 @@ export function resolveQueryPlan(
 ): QueryPlan {
   const tableName = config.tables[model];
   if (!tableName) {
-    throw new Error(`No table configured for model "${model}"`);
+    throw new DynamoAdapterError(
+      "UNKNOWN_MODEL",
+      `[UNKNOWN_MODEL] No table configured for model "${model}".`,
+    );
   }
 
   const schema = getKeySchema(model, config);

@@ -13,6 +13,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan, matchesClientFilters } from "../../helpers/resolve-item";
+import { getTableName } from "../client";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -27,10 +28,7 @@ export function findOneMethod(
     select?: string[];
     join?: any;
   }): Promise<Record<string, any> | null> => {
-    const tableName = config.tables[args.model];
-    if (!tableName) {
-      throw new Error(`No table configured for model "${args.model}"`);
-    }
+    const tableName = getTableName(args.model, config);
 
     const plan = resolveQueryPlan(args.where, args.model, config);
 
