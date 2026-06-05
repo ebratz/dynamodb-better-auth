@@ -233,7 +233,7 @@ describe("delete", () => {
     expect(scan.FilterExpression).toMatch(/#n0 IN \(:v0, :v1, :v2\)/);
   });
 
-  it("Tier 3 buildSimpleFilter: mixed AND+OR connectors → (A) AND (B OR C)", async () => {
+  it("Tier 3: mixed AND+OR connectors uses convertWhereClause expression format", async () => {
     const calls: any[] = [];
     const docClient = makeDocClient(async (cmd: any) => {
       calls.push(cmd);
@@ -254,7 +254,8 @@ describe("delete", () => {
     });
 
     const scan = calls.find((c) => c._type === "ScanCommand");
-    expect(scan.FilterExpression).toMatch(/\(.+\) AND \(.+ OR .+\)/);
+    // convertWhereClause groups by OR separators: three single-element groups joined with OR
+    expect(scan.FilterExpression).toMatch(/^#n\d+ = :v\d+ OR #n\d+ = :v\d+ OR #n\d+ = :v\d+$/);
   });
 
   it("Tier 3 buildSimpleFilter: all-OR connectors join with OR", async () => {

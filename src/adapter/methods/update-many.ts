@@ -3,14 +3,17 @@
  *
  * Returns the count of successfully updated items.
  *
- * Standard path: find matching items → parallel UpdateItem calls
- *   (concurrency-limited, default 10). Field-level SET #f = :v semantics
- *   preserve concurrent writes to different fields (no lost-update hazard).
+ * Standard path: resolve matching items via GSI Query or Scan → parallel
+ *   UpdateItem calls (concurrency-limited, default 10). Field-level
+ *   SET #f = :v semantics preserve concurrent writes to different fields.
  *
  * unsafeBatchUpdate path: BatchWriteCommand+Put (full-item overwrite, LWW).
  *
  * On partial failure: throw AggregateError with per-item errors.
  * Successful updates remain committed (non-transactional by design).
+ *
+ * PK/SK fields are stripped from the update payload to prevent
+ * DynamoDB ValidationException on key-attribute mutation.
  */
 
 import {
@@ -18,11 +21,13 @@ import {
   QueryCommand,
   ScanCommand,
   BatchWriteCommand,
+  GetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { buildExpressionNames, compactExpr } from "../../helpers/expression-names";
+import { resolveFilter } from "../../helpers/query-planner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Where = any;
@@ -43,24 +48,31 @@ export function updateManyMethod(
     }
     const schema = getKeySchema(model, config);
 
-    if (Object.keys(update).length === 0) return 0;
+    // ── Strip PK/SK fields from update payload ─────────────────
+    const updateData = { ...update };
+    delete updateData[schema.pkField];
+    if (schema.skField) {
+      delete updateData[schema.skField];
+    }
 
-    // ── Find matching items ───────────────────────────────────
+    if (Object.keys(updateData).length === 0) return 0;
+
+    // ── Find matching items ────────────────────────────────────
     const items = await _findItems(docClient, tableName, where, model, schema, config);
 
     if (items.length === 0) return 0;
 
-    // ── unsafeBatchUpdate path ────────────────────────────────
+    // ── unsafeBatchUpdate path ─────────────────────────────────
     if (config.unsafeBatchUpdate) {
-      return _batchPutUpdate(docClient, tableName, items, update, schema, config);
+      return _batchPutUpdate(docClient, tableName, items, updateData, config);
     }
 
-    // ── Standard path: parallel UpdateItem ────────────────────
+    // ── Standard path: parallel UpdateItem ─────────────────────
     const concurrency = config.updateManyConcurrency ?? 10;
     const { results, errors } = await _parallelLimit(
       items,
       concurrency,
-      (item) => _updateOne(docClient, tableName, item, update, schema),
+      (item) => _updateOne(docClient, tableName, item, updateData, schema),
     );
 
     if (errors.length > 0) {
@@ -75,63 +87,13 @@ export function updateManyMethod(
   };
 }
 
-// ── Internal helpers ───────────────────────────────────────────
+// ── Item lookup ─────────────────────────────────────────────────
 
-interface FindPlan {
-  operation: "query" | "scan";
-  indexName?: string;
-  keyCondition?: string;
-  filterExpression?: string;
-  expressionAttributeNames: Record<string, string>;
-  expressionAttributeValues: Record<string, any>;
-  needsFollowUpGetItem?: boolean;
-  followUpKeyFields?: { pkField: string; skField?: string };
-}
-
-function buildSimpleFilter(
-  where: Where[],
-  fieldName: (f: string, i: number) => string,
-  valRef: (v: any, i: number) => string,
-  names: Record<string, string>,
-  values: Record<string, any>,
-): string {
-  const parts: string[] = [];
-
-  for (const w of where) {
-    const fRef = fieldName(w.field, Object.keys(names).length);
-    if (w.operator === "in" && Array.isArray(w.value)) {
-      const refs = w.value.map((v: any) => valRef(v, Object.keys(values).length));
-      parts.push(`${fRef} IN (${refs.join(", ")})`);
-    } else if (w.operator === "gt")
-      parts.push(`${fRef} > ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "gte")
-      parts.push(`${fRef} >= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lt")
-      parts.push(`${fRef} < ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lte")
-      parts.push(`${fRef} <= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "ne")
-      parts.push(`${fRef} <> ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "starts_with")
-      parts.push(`begins_with(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else if (w.operator === "contains")
-      parts.push(`contains(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else
-      parts.push(`${fRef} = ${valRef(w.value, Object.keys(values).length)}`);
-  }
-
-  const andW = where.filter((w: Where) => !w.connector || w.connector !== "OR");
-  const orW = where.filter((w: Where) => w.connector === "OR");
-
-  if (andW.length && orW.length) {
-    const andPart = parts.slice(0, andW.length).join(" AND ");
-    const orPart = parts.slice(andW.length).join(" OR ");
-    return `(${andPart}) AND (${orPart})`;
-  }
-  if (orW.length) return parts.join(" OR ");
-  return parts.join(" AND ");
-}
-
+/**
+ * Finds all items matching the where clause.
+ * Tier 2: GSI Query when an eq operator matches a declared GSI hash key.
+ * Tier 3: Scan with FilterExpression via resolveFilter.
+ */
 async function _findItems(
   docClient: DynamoDBDocumentClient,
   tableName: string,
@@ -140,26 +102,12 @@ async function _findItems(
   schema: { pkField: string; skField?: string },
   config: DynamoDBAdapterConfig,
 ): Promise<Record<string, any>[]> {
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
-
-  const fieldName = (f: string, i: number) => {
-    const nk = `#n${i}`;
-    names[nk] = f;
-    return nk;
-  };
-  const valRef = (v: any, i: number) => {
-    const vk = `:v${i}`;
-    values[vk] = v;
-    return vk;
-  };
-
-  // No where clause → Scan all
+  // No where clause → full table Scan
   if (!where || where.length === 0) {
     return _scanAll(docClient, tableName);
   }
 
-  // Tier 2: Check for GSI
+  // ── Tier 2: GSI check ────────────────────────────────────
   const nonOr = where.filter(
     (w: Where) => !w.connector || w.connector !== "OR",
   );
@@ -169,6 +117,21 @@ async function _findItems(
     for (const w of nonOr) {
       const gsiDecl = modelIndexes[w.field];
       if (gsiDecl && (!w.operator || w.operator === "eq")) {
+        // Build the GSI Query plan
+        const names: Record<string, string> = {};
+        const values: Record<string, any> = {};
+
+        const fieldName = (f: string, i: number) => {
+          const nk = `#n${i}`;
+          names[nk] = f;
+          return nk;
+        };
+        const valRef = (v: any, i: number) => {
+          const vk = `:v${i}`;
+          values[vk] = v;
+          return vk;
+        };
+
         const fRef = fieldName(w.field, Object.keys(names).length);
         const vRef = valRef(w.value, Object.keys(values).length);
 
@@ -184,45 +147,84 @@ async function _findItems(
           }
         }
 
+        // Remaining clauses become FilterExpression via resolveFilter
         const rest = nonOr.filter(
           (rw: Where) => rw !== w && rw.field !== gsiDecl.rangeKey,
         );
-        const filter = rest.length
-          ? buildSimpleFilter(rest, fieldName, valRef, names, values)
-          : undefined;
+        const ors = where.filter((rw: Where) => rw.connector === "OR");
+        const extra = [...rest, ...ors];
 
-        return _queryAll(docClient, tableName, {
-          operation: "query",
+        let filterExpr: string | undefined;
+        if (extra.length > 0) {
+          const f = resolveFilter(extra, model, config);
+          if (f) {
+            Object.assign(names, f.expressionAttributeNames);
+            Object.assign(values, f.expressionAttributeValues);
+            filterExpr = f.expression;
+          }
+        }
+
+        const items = await _queryAll(docClient, tableName, {
           indexName: gsiDecl.indexName,
           keyCondition: `${fRef} = ${vRef}${sortCondition}`,
-          ...(filter ? { filterExpression: filter } : {}),
+          filterExpression: filterExpr,
           expressionAttributeNames: names,
           expressionAttributeValues: values,
-          needsFollowUpGetItem: gsiDecl.projection === "KEYS_ONLY",
-          followUpKeyFields:
-            gsiDecl.projection === "KEYS_ONLY"
-              ? { pkField: schema.pkField, skField: schema.skField }
-              : undefined,
         });
+
+        // KEYS_ONLY follow-up
+        if (gsiDecl.projection === "KEYS_ONLY" && items.length > 0) {
+          const fullItems: Record<string, any>[] = [];
+          for (const gsiItem of items) {
+            const key: Record<string, any> = { [schema.pkField]: gsiItem[schema.pkField] };
+            if (schema.skField && gsiItem[schema.skField] !== undefined) {
+              key[schema.skField] = gsiItem[schema.skField];
+            }
+            const fuResult = await docClient.send(
+              new GetCommand({ TableName: tableName, Key: key }),
+            );
+            if (fuResult.Item) {
+              fullItems.push(fuResult.Item as any);
+            }
+          }
+          return fullItems;
+        }
+
+        return items;
       }
     }
   }
 
-  // Tier 3: Scan
-  const filter = buildSimpleFilter(where, fieldName, valRef, names, values);
+  // ── Tier 3: Scan ─────────────────────────────────────────
   if (config.debugLogs) {
     console.warn(
       `[dynamodb-adapter] updateMany on ${model} using Scan (Tier 3). ` +
         `Consider adding a GSI for the queried field(s).`,
     );
   }
-  return _scanAll(docClient, tableName, filter, names, values);
+
+  const filter = resolveFilter(where, model, config);
+  return _scanAll(
+    docClient,
+    tableName,
+    filter?.expression,
+    filter?.expressionAttributeNames,
+    filter?.expressionAttributeValues,
+  );
 }
+
+// ── Paginated helpers ───────────────────────────────────────────
 
 async function _queryAll(
   docClient: DynamoDBDocumentClient,
   tableName: string,
-  plan: FindPlan,
+  params: {
+    indexName: string;
+    keyCondition: string;
+    filterExpression?: string;
+    expressionAttributeNames: Record<string, string>;
+    expressionAttributeValues: Record<string, any>;
+  },
 ): Promise<Record<string, any>[]> {
   const items: Record<string, any>[] = [];
   let lastKey: Record<string, any> | undefined;
@@ -231,10 +233,10 @@ async function _queryAll(
     const result = await docClient.send(
       new QueryCommand({
         TableName: tableName,
-        IndexName: plan.indexName!,
-        KeyConditionExpression: plan.keyCondition!,
-        FilterExpression: plan.filterExpression || undefined,
-        ...compactExpr(plan.expressionAttributeNames, plan.expressionAttributeValues),
+        IndexName: params.indexName,
+        KeyConditionExpression: params.keyCondition,
+        FilterExpression: params.filterExpression || undefined,
+        ...compactExpr(params.expressionAttributeNames, params.expressionAttributeValues),
         ExclusiveStartKey: lastKey,
       } as any),
     );
@@ -274,6 +276,8 @@ async function _scanAll(
   return items;
 }
 
+// ── Item update ─────────────────────────────────────────────────
+
 async function _updateOne(
   docClient: DynamoDBDocumentClient,
   tableName: string,
@@ -310,12 +314,13 @@ async function _updateOne(
   return true;
 }
 
+// ── Batch Put (unsafeBatchUpdate) ───────────────────────────────
+
 async function _batchPutUpdate(
   docClient: DynamoDBDocumentClient,
   tableName: string,
   items: Record<string, any>[],
   update: Record<string, any>,
-  schema: { pkField: string; skField?: string },
   config: DynamoDBAdapterConfig,
 ): Promise<number> {
   if (config.debugLogs) {
@@ -327,9 +332,11 @@ async function _batchPutUpdate(
 
   let updated = 0;
 
-  // Chunk into batches of 25
-  for (let i = 0; i < items.length; i += 25) {
-    const chunk = items.slice(i, i + 25);
+  // Chunk into batches of 25 (DynamoDB BatchWrite limit)
+  const BATCH_SIZE = 25;
+
+  for (let i = 0; i < items.length; i += BATCH_SIZE) {
+    const chunk = items.slice(i, i + BATCH_SIZE);
     const putRequests = chunk.map((item) => {
       const patched = { ...item, ...update };
       return {
@@ -345,7 +352,7 @@ async function _batchPutUpdate(
       }),
     );
 
-    // Retry UnprocessedItems up to 3 times
+    // Retry UnprocessedItems up to 3 times with exponential backoff
     let retries = 0;
     let unprocessed = result.UnprocessedItems;
     while (unprocessed && Object.keys(unprocessed).length > 0 && retries < 3) {
@@ -359,13 +366,15 @@ async function _batchPutUpdate(
       retries++;
     }
 
-    updated += chunk.length;
+    // Only count items that were actually processed
+    const unprocessedInChunk = (unprocessed as any)?.[tableName]?.length ?? 0;
+    updated += chunk.length - unprocessedInChunk;
   }
 
   return updated;
 }
 
-// ── Concurrency limiter ───────────────────────────────────────
+// ── Concurrency limiter ─────────────────────────────────────────
 
 async function _parallelLimit<T, R>(
   items: T[],

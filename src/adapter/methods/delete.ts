@@ -3,10 +3,11 @@
  *
  * Deletes a single item identified by the where clause.
  *
- * Tier 1: DeleteCommand on resolved PK (or composite PK+SK).
- * Tier 2/3: inline _findOneItem to locate the row, extract PK+SK,
- *           then DeleteCommand on the resolved key.
- *           Missing item → silently OK (no-op).
+ * Uses centralized resolveQueryPlan for Tier 1–3 key resolution.
+ * Tier 1: DeleteCommand on resolved PK (+SK).
+ * Tier 2/3: Query/Scan + Limit:1 to find the row, extract key,
+ *           then DeleteCommand.
+ * Missing item → silently OK (no-op).
  */
 
 import { DeleteCommand, QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -14,6 +15,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { compactExpr } from "../../helpers/expression-names";
+import { resolveQueryPlan } from "../../helpers/query-planner";
 import { getTableName } from "../client";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -31,23 +33,40 @@ export function deleteMethod(
     const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
-    // ── Resolve key ───────────────────────────────────────────
-    const plan = resolveDeletePlan(where, model, schema, config);
+    // ── Resolve plan via centralized planner ───────────────────
+    const plan = resolveQueryPlan(where, model, config);
 
+    // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
-    if (plan.key) {
-      key = plan.key;
+
+    // Tier 1: use pre-resolved key directly, but only when the key
+    // is complete (composite tables require SK) and there are no
+    // extra where clauses that need client-side filtering.
+    const keyIsComplete =
+      plan.tier === 1 &&
+      plan.key &&
+      !plan.needsClientSideFilter &&
+      (!schema.skField || plan.key[schema.skField] !== undefined);
+
+    if (keyIsComplete) {
+      key = plan.key!;
     } else {
-      // Tier 2/3: findOne to extract key
-      const item = await _findOneItem(docClient, tableName, plan, config, model);
-      if (!item) return; // silently OK
+      // Tier 2/3 (or incomplete Tier 1): find the item first
+      const item = await _resolveItemByPlan(
+        docClient,
+        tableName,
+        plan,
+        config,
+        model,
+      );
+      if (!item) return; // silently OK — nothing to delete
       key = { [schema.pkField]: item[schema.pkField] };
       if (schema.skField && item[schema.skField] !== undefined) {
         key[schema.skField] = item[schema.skField];
       }
     }
 
-    // ── Execute DeleteItem ────────────────────────────────────
+    // ── Execute DeleteItem ─────────────────────────────────────
     await docClient.send(
       new DeleteCommand({
         TableName: tableName,
@@ -59,122 +78,20 @@ export function deleteMethod(
 
 // ── Internal helpers ───────────────────────────────────────────
 
-interface DeletePlan {
-  operation: "getItem" | "query" | "scan";
-  key?: Record<string, any>;
-  indexName?: string;
-  keyCondition?: string;
-  filterExpression?: string;
-  expressionAttributeNames: Record<string, string>;
-  expressionAttributeValues: Record<string, any>;
-  needsFollowUpGetItem?: boolean;
-}
-
-function resolveDeletePlan(
-  where: Where[],
-  model: string,
-  schema: { pkField: string; skField?: string },
-  config: DynamoDBAdapterConfig,
-): DeletePlan {
-  const names: Record<string, string> = {};
-  const values: Record<string, any> = {};
-
-  const fieldName = (f: string, i: number) => {
-    const nk = `#n${i}`;
-    names[nk] = f;
-    return nk;
-  };
-  const valRef = (v: any, i: number) => {
-    const vk = `:v${i}`;
-    values[vk] = v;
-    return vk;
-  };
-
-  // Tier 1: PK equality
-  const pkEq = where.filter(
-    (w: Where) =>
-      (!w.operator || w.operator === "eq") &&
-      (!w.connector || w.connector !== "OR"),
-  );
-  const pkMatch = pkEq.find((w: Where) => w.field === schema.pkField);
-  const skMatch = schema.skField
-    ? pkEq.find((w: Where) => w.field === schema.skField)
-    : undefined;
-
-  if (pkMatch && (schema.skField ? skMatch : true)) {
-    const key: Record<string, any> = { [schema.pkField]: pkMatch.value };
-    if (schema.skField && skMatch) {
-      key[schema.skField] = skMatch.value;
-    }
-    return {
-      operation: "getItem",
-      key,
-      expressionAttributeNames: {},
-      expressionAttributeValues: {},
-    };
-  }
-
-  // Tier 2: Check for GSI match
-  const nonOr = where.filter(
-    (w: Where) => !w.connector || w.connector !== "OR",
-  );
-  const modelIndexes = config.indexes?.[model];
-
-  if (modelIndexes && nonOr.length > 0) {
-    for (const w of nonOr) {
-      const gsiDecl = modelIndexes[w.field];
-      if (gsiDecl && (!w.operator || w.operator === "eq")) {
-        const fRef = fieldName(w.field, Object.keys(names).length);
-        const vRef = valRef(w.value, Object.keys(values).length);
-
-        let sortCondition = "";
-        if (gsiDecl.rangeKey) {
-          const skW = nonOr.find(
-            (rw: Where) => rw.field === gsiDecl.rangeKey && rw !== w,
-          );
-          if (skW) {
-            const skRef = fieldName(gsiDecl.rangeKey, Object.keys(names).length);
-            const skValRef = valRef(skW.value, Object.keys(values).length);
-            sortCondition = ` AND ${skRef} = ${skValRef}`;
-          }
-        }
-
-        const rest = nonOr.filter(
-          (rw: Where) => rw !== w && rw.field !== gsiDecl.rangeKey,
-        );
-        const filter = buildSimpleFilter(rest, fieldName, valRef, names, values);
-
-        return {
-          operation: "query",
-          indexName: gsiDecl.indexName,
-          keyCondition: `${fRef} = ${vRef}${sortCondition}`,
-          ...(filter ? { filterExpression: filter } : {}),
-          expressionAttributeNames: names,
-          expressionAttributeValues: values,
-          needsFollowUpGetItem: gsiDecl.projection === "KEYS_ONLY",
-        };
-      }
-    }
-  }
-
-  // Tier 3: Scan
-  const filter = buildSimpleFilter(where, fieldName, valRef, names, values);
-  return {
-    operation: "scan",
-    ...(filter ? { filterExpression: filter } : {}),
-    expressionAttributeNames: names,
-    expressionAttributeValues: values,
-  };
-}
-
-async function _findOneItem(
+/**
+ * Finds a single item using the plan returned by resolveQueryPlan.
+ * Handles Tier 2 (GSI Query) and Tier 3 (Scan), plus KEYS_ONLY
+ * follow-up GetItem for sparse GSI projections.
+ */
+async function _resolveItemByPlan(
   docClient: DynamoDBDocumentClient,
   tableName: string,
-  plan: DeletePlan,
+  plan: ReturnType<typeof resolveQueryPlan>,
   config: DynamoDBAdapterConfig,
   model: string,
 ): Promise<Record<string, any> | null> {
-  if (plan.operation === "query") {
+  // ── Tier 2: GSI Query ─────────────────────────────────────
+  if (plan.tier === 2 && plan.operation === "query") {
     const result = await docClient.send(
       new QueryCommand({
         TableName: tableName,
@@ -186,14 +103,14 @@ async function _findOneItem(
       } as any),
     );
 
-    const items = result.Items ?? [];
+    const items = (result.Items ?? []) as Record<string, any>[];
 
     if (plan.needsFollowUpGetItem && items.length > 0) {
-      const item = items[0]! as Record<string, any>;
-      const schema = getKeySchema(model, config);
-      const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
-      if (schema.skField && item[schema.skField] !== undefined) {
-        key[schema.skField] = item[schema.skField];
+      const gsiItem = items[0]!;
+      const fk = plan.followUpKeyFields!;
+      const key: Record<string, any> = { [fk.pkField]: gsiItem[fk.pkField] };
+      if (fk.skField && gsiItem[fk.skField] !== undefined) {
+        key[fk.skField] = gsiItem[fk.skField];
       }
       const fuResult = await docClient.send(
         new GetCommand({ TableName: tableName, Key: key }),
@@ -201,10 +118,10 @@ async function _findOneItem(
       return (fuResult.Item as any) ?? null;
     }
 
-    return (items[0] as any) ?? null;
+    return items[0] ?? null;
   }
 
-  // Scan
+  // ── Tier 3: Scan ──────────────────────────────────────────
   if (config.debugLogs) {
     const debug =
       typeof config.debugLogs === "object" ? config.debugLogs : {};
@@ -225,51 +142,5 @@ async function _findOneItem(
     } as any),
   );
 
-  return (result.Items?.[0] as any) ?? null;
-}
-
-function buildSimpleFilter(
-  where: Where[],
-  fieldName: (f: string, i: number) => string,
-  valRef: (v: any, i: number) => string,
-  names: Record<string, string>,
-  values: Record<string, any>,
-): string {
-  if (where.length === 0) return "";
-
-  const parts: string[] = [];
-
-  for (const w of where) {
-    const fRef = fieldName(w.field, Object.keys(names).length);
-    if (w.operator === "in" && Array.isArray(w.value)) {
-      const refs = w.value.map((v: any) => valRef(v, Object.keys(values).length));
-      parts.push(`${fRef} IN (${refs.join(", ")})`);
-    } else if (w.operator === "gt")
-      parts.push(`${fRef} > ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "gte")
-      parts.push(`${fRef} >= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lt")
-      parts.push(`${fRef} < ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "lte")
-      parts.push(`${fRef} <= ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "ne")
-      parts.push(`${fRef} <> ${valRef(w.value, Object.keys(values).length)}`);
-    else if (w.operator === "starts_with")
-      parts.push(`begins_with(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else if (w.operator === "contains")
-      parts.push(`contains(${fRef}, ${valRef(w.value, Object.keys(values).length)})`);
-    else
-      parts.push(`${fRef} = ${valRef(w.value, Object.keys(values).length)}`);
-  }
-
-  const andW = where.filter((w: Where) => !w.connector || w.connector !== "OR");
-  const orW = where.filter((w: Where) => w.connector === "OR");
-
-  if (andW.length && orW.length) {
-    const andPart = parts.slice(0, andW.length).join(" AND ");
-    const orPart = parts.slice(andW.length).join(" OR ");
-    return `(${andPart}) AND (${orPart})`;
-  }
-  if (orW.length) return parts.join(" OR ");
-  return parts.join(" AND ");
+  return ((result.Items as any)?.[0] as any) ?? null;
 }
