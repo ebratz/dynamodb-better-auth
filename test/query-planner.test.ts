@@ -395,15 +395,23 @@ describe("resolveQueryPlan", () => {
     // Key condition should reference email and createdAt
     expect(plan.keyCondition).toContain("#n0 = :v0");
     expect(plan.keyCondition).toContain("#n1");
-    // Filter expression should use a distinct, non-colliding placeholder.
-    // With remapping, filter gets #n2 (offset = 2 from kcNames).
-    // The value reference stays :v0 (filter starts its own value namespace)
-    expect(plan.filterExpression).toContain("#n2 = :v0");
+    // Filter refs are shifted past the key condition's slots (names and
+    // values both) so the namespaces are provably disjoint — the 0.1.5 bug
+    // let the filter's :v0 overwrite the key's :v0 via Object.assign
+    // ("Condition parameter type does not match schema type" in prod, or
+    // silently wrong results when the types happened to match).
+    expect(plan.filterExpression).toContain("#n2 = :v2");
     // Verify the merged names map has all 3 fields with distinct keys
     const names = plan.expressionAttributeNames;
     expect(names["#n0"]).toBe("email");
     expect(names["#n1"]).toBe("createdAt");
     expect(names["#n2"]).toBe("role");
     expect(Object.keys(names)).toHaveLength(3);
+    // ...and every binding keeps its own value — key values un-clobbered.
+    const values = plan.expressionAttributeValues;
+    expect(values[":v0"]).toBe("x@y.com");
+    expect(values[":v1"]).toBe("2024-01-01");
+    expect(values[":v2"]).toBe("admin");
+    expect(Object.keys(values)).toHaveLength(3);
   });
 });

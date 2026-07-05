@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.5...v0.1.6) (2026-07-05)
+
+
+### Bug Fixes
+
+* **query-planner:** remap `:vX` value placeholder collisions when merging key-condition and filter expressions — previously the filter's values silently overwrote the key condition's via `Object.assign`, causing GSI queries with extra where clauses to fail with `ValidationException` (or return wrong results when types coincided); also hardened `#nX` remapping against cascade and prefix mismatches (`#n1` matching inside `#n10`)
+
 ## [0.1.5](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.4...v0.1.5) (2026-06-05)
 
 
