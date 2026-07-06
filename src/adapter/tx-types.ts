@@ -29,6 +29,22 @@ export interface TransactionFactoryHelpers {
     join?: any,
   ) => Promise<Record<string, unknown>>;
   getDefaultModelName: (model: string) => string;
+  /**
+   * Framework where-clause transform: field-name mapping, value coercion
+   * (Dates, ids), operator/connector defaults. The tx adapter must apply
+   * this to every read and key resolution — better-auth hands the tx
+   * callback raw logical where clauses, exactly as it does to its own
+   * framework-level adapter (DBTransactionAdapter contract).
+   */
+  transformWhereClause?: (args: {
+    model: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    where: any[] | undefined;
+    action: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) => any[] | undefined;
+  /** Maps a default model name to its usePlural / modelName-mapped form. */
+  getModelName?: (model: string) => string;
 }
 
 /**

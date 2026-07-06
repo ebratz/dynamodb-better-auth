@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { resolveItemByPlan, matchesClientFilters } from "../src/helpers/resolve-item";
+import { DynamoAdapterError, UnsupportedOperatorError } from "../src/errors";
 import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the SDK
@@ -77,7 +78,74 @@ describe("resolveItemByPlan", () => {
     expect(result).toEqual(item);
     expect(calls).toHaveLength(1);
     expect(calls[0].IndexName).toBe("email-index");
-    expect(calls[0].Limit).toBe(1);
+    expect(calls[0].Limit).toBe(100);
+  });
+
+  it("Tier 2 Query: paginates via LastEvaluatedKey until a match is found", async () => {
+    const item = { id: "u1", email: "a@b.com", name: "Alice" };
+    const calls: any[] = [];
+    let callCount = 0;
+    const docClient = {
+      send: vi.fn().mockImplementation(async (cmd: any) => {
+        calls.push(cmd);
+        callCount++;
+        if (callCount === 1) {
+          return { Items: [], LastEvaluatedKey: { id: "cursor-1" } };
+        }
+        return { Items: [item] };
+      }),
+    };
+    const config = makeConfig();
+
+    const plan = {
+      tier: 2 as const,
+      operation: "query" as const,
+      indexName: "email-index",
+      keyCondition: "#n0 = :v0",
+      expressionAttributeNames: { "#n0": "email" },
+      expressionAttributeValues: { ":v0": "a@b.com" },
+    };
+
+    const result = await resolveItemByPlan(
+      docClient as any,
+      "test-users",
+      plan as any,
+      config,
+      "user",
+    );
+
+    expect(result).toEqual(item);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].Limit).toBe(100);
+    expect(calls[0].ExclusiveStartKey).toBeUndefined();
+    expect(calls[1].ExclusiveStartKey).toEqual({ id: "cursor-1" });
+  });
+
+  it("throws INVALID_PLAN when given a Tier-1 plan", async () => {
+    const send = vi.fn();
+    const docClient = { send };
+    const config = makeConfig();
+
+    const plan = {
+      tier: 1 as const,
+      operation: "getItem" as const,
+      key: { id: "u1" },
+    };
+
+    try {
+      await resolveItemByPlan(
+        docClient as any,
+        "test-users",
+        plan as any,
+        config,
+        "user",
+      );
+      expect.fail("expected resolveItemByPlan to throw");
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(DynamoAdapterError);
+      expect(err.code).toBe("INVALID_PLAN");
+    }
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("Tier 2 Query: no match returns null", async () => {
@@ -253,7 +321,7 @@ describe("resolveItemByPlan", () => {
     expect(result).toEqual(item);
     expect(calls).toHaveLength(1);
     expect(calls[0].FilterExpression).toBe("#n0 = :v0");
-    expect(calls[0].Limit).toBe(1);
+    expect(calls[0].Limit).toBe(100);
   });
 
   it("Tier 3 Scan: no match returns null", async () => {
@@ -428,10 +496,12 @@ describe("matchesClientFilters", () => {
     ])).toBe(false);
   });
 
-  it("unknown operator returns false", () => {
-    expect(matchesClientFilters(item, [
-      { field: "name", operator: "regex" as any, value: ".*" },
-    ])).toBe(false);
+  it("unknown operator throws UnsupportedOperatorError", () => {
+    expect(() =>
+      matchesClientFilters(item, [
+        { field: "name", operator: "regex" as any, value: ".*" },
+      ]),
+    ).toThrow(UnsupportedOperatorError);
   });
 
   it("field not present on item: returns false for eq operator", () => {

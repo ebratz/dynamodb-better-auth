@@ -10,6 +10,7 @@
 
 import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
+import { toDefaultModelName } from "../helpers/model-name";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
 import type { TransactionContext } from "./tx-types";
 
@@ -41,36 +42,31 @@ export async function txCreate(
   const schema = getKeySchema(model, ctx.config);
   const pkField = schema.pkField;
 
-  assertTransactionCapacity(ctx.writeBuffer, 1);
-
-  // If enableEmailUniqueness and model is "user", buffer email-lookup too
-  if (ctx.config.enableEmailUniqueness && model === "user" && item.email) {
+  // Resolve email-lookup actions FIRST so the capacity guard accounts
+  // for the real number of buffered actions (model check runs on the
+  // default name — better-auth may pass a mapped name).
+  let emailActions: ReturnType<typeof buildEmailUniquenessActions> = [];
+  if (
+    ctx.config.enableEmailUniqueness &&
+    toDefaultModelName(ctx.config, model) === "user" &&
+    item.email
+  ) {
     ctx.hasEmailUniqueness.value = true;
+    emailActions = buildEmailUniquenessActions("create", ctx.config, { data: item });
+  }
 
-    // User put
-    ctx.writeBuffer.push({
-      Put: {
-        TableName: tableName,
-        Item: item,
-        ConditionExpression: "attribute_not_exists(#pk)",
-        ExpressionAttributeNames: { "#pk": pkField },
-      },
-    });
+  assertTransactionCapacity(ctx.writeBuffer, 1 + emailActions.length);
 
-    // Email-lookup actions via buildEmailUniquenessActions
-    const emailActions = buildEmailUniquenessActions("create", ctx.config, { data: item });
-    for (const action of emailActions) {
-      ctx.writeBuffer.push(action);
-    }
-  } else {
-    ctx.writeBuffer.push({
-      Put: {
-        TableName: tableName,
-        Item: item,
-        ConditionExpression: "attribute_not_exists(#pk)",
-        ExpressionAttributeNames: { "#pk": pkField },
-      },
-    });
+  ctx.writeBuffer.push({
+    Put: {
+      TableName: tableName,
+      Item: item,
+      ConditionExpression: "attribute_not_exists(#pk)",
+      ExpressionAttributeNames: { "#pk": pkField },
+    },
+  });
+  for (const action of emailActions) {
+    ctx.writeBuffer.push(action);
   }
 
   return helpers.transformOutput(item, defaultModelName, select);

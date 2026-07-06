@@ -184,6 +184,43 @@ describe("transaction", () => {
       expect(item.Update.UpdateExpression).toContain("SET");
     });
 
+    it("txUpdate after txCreate on the same key merges into the buffered Put (read-your-writes)", async () => {
+      const calls: any[] = [];
+      const docClient = makeDocClient(async (cmd: any) => {
+        calls.push(cmd);
+        return {};
+      });
+
+      const nativeAdapter = makeNativeAdapter();
+      const config = makeConfig(docClient);
+      const tx = createTransactionWrapper(nativeAdapter, config, getTable);
+
+      const result = await tx(async (txAdapter) => {
+        await txAdapter.create({
+          model: "user",
+          data: { id: "u1", email: "a@b.com", name: "Alice" },
+        });
+        return txAdapter.update({
+          model: "user",
+          where: [{ field: "id", operator: "eq", value: "u1" }],
+          update: { name: "Alicia" },
+        });
+      });
+
+      // Merged item returned straight from the buffered Put — no DynamoDB read needed.
+      expect(result).toEqual({ id: "u1", email: "a@b.com", name: "Alicia" });
+      expect(nativeAdapter.findOne).not.toHaveBeenCalled();
+
+      // Only the (patched) Put is buffered — no separate Update action.
+      expect(calls.length).toBe(1);
+      expect(calls[0].TransactItems.length).toBe(1);
+      expect(calls[0].TransactItems[0].Put.Item).toEqual({
+        id: "u1",
+        email: "a@b.com",
+        name: "Alicia",
+      });
+    });
+
     it("buffers delete on known key", async () => {
       const calls: any[] = [];
       const docClient = makeDocClient(async (cmd: any) => {
@@ -734,6 +771,36 @@ describe("transaction", () => {
     });
   });
 
+  describe("duplicate transaction target guard", () => {
+    it("two buffered Deletes on the same table+key throw DUPLICATE_TRANSACTION_ITEM before any send", async () => {
+      const calls: any[] = [];
+      const docClient = makeDocClient(async (cmd: any) => {
+        calls.push(cmd);
+        return {};
+      });
+
+      const nativeAdapter = makeNativeAdapter();
+      const config = makeConfig(docClient);
+      const tx = createTransactionWrapper(nativeAdapter, config, getTable);
+
+      await expect(
+        tx(async (txAdapter) => {
+          await txAdapter.delete({
+            model: "session",
+            where: [{ field: "token", operator: "eq", value: "tok123" }],
+          });
+          await txAdapter.delete({
+            model: "session",
+            where: [{ field: "token", operator: "eq", value: "tok123" }],
+          });
+        }),
+      ).rejects.toMatchObject({ code: "DUPLICATE_TRANSACTION_ITEM" });
+
+      // The guard runs before TransactWriteCommand is ever sent.
+      expect(calls.length).toBe(0);
+    });
+  });
+
   describe("flush error handling", () => {
     it("TransactionCanceledException with multiple CancellationReasons includes reason details", async () => {
       const docClient = makeDocClient(async (_cmd: any) => {
@@ -969,7 +1036,7 @@ describe("transaction", () => {
       ).rejects.toThrow(/more than 100/);
     });
 
-    it("tx.update with null preState returns update data without merge", async () => {
+    it("tx.update with null preState returns null and buffers nothing", async () => {
       const calls: any[] = [];
       const docClient = makeDocClient(async (cmd: any) => {
         calls.push(cmd);
@@ -992,12 +1059,10 @@ describe("transaction", () => {
         });
       });
 
-      // Returns the update data without preState fields
-      expect(result).toEqual({ name: "Ghost" });
-      // The item is still buffered for Update (it will fail at flush with ConditionalCheckFailed)
-      expect(calls.length).toBe(1);
-      expect(calls[0].TransactItems[0].Update).toMatchObject({ TableName: "test-users" });
-      expect(calls[0].TransactItems[0].Update.Key).toEqual({ id: "nonexistent" });
+      // Missing row: update returns null and buffers nothing — a doomed
+      // conditional Update would otherwise cancel the whole transaction.
+      expect(result).toBeNull();
+      expect(calls.length).toBe(0);
     });
   });
 });

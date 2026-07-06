@@ -10,12 +10,12 @@
  * Missing item → silently OK (no-op).
  */
 
-import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { resolveQueryPlan } from "../../helpers/query-planner";
-import { resolveItemByPlan } from "../../helpers/resolve-item";
+import { resolveItemByPlan, matchesClientFilters } from "../../helpers/resolve-item";
 import { getTableName } from "../client";
 
 export function deleteMethod(
@@ -33,22 +33,30 @@ export function deleteMethod(
     // ── Resolve plan via centralized planner ───────────────────
     const plan = resolveQueryPlan(where, model, config);
 
+    // Vacuously-false where clause (e.g. `in: []`) — nothing to delete.
+    if (plan.alwaysFalse) return;
+
     // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
 
-    // Tier 1: use pre-resolved key directly, but only when the key
-    // is complete (composite tables require SK) and there are no
-    // extra where clauses that need client-side filtering.
-    const keyIsComplete =
-      plan.tier === 1 &&
-      plan.key &&
-      !plan.needsClientSideFilter &&
-      (!schema.skField || plan.key[schema.skField] !== undefined);
-
-    if (keyIsComplete) {
+    if (plan.tier === 1) {
+      // Tier-1 keys are always complete (the planner falls through to
+      // Tier 2/3 otherwise). Extra where clauses must be verified against
+      // the actual item — GetItem has no FilterExpression, and routing a
+      // Tier-1 plan through resolveItemByPlan would scan UNFILTERED and
+      // delete an arbitrary row.
+      if (plan.needsClientSideFilter && plan.clientSideFilters) {
+        const current = await docClient.send(
+          new GetCommand({ TableName: tableName, Key: plan.key! }),
+        );
+        const item = (current.Item as any) ?? null;
+        if (!item || !matchesClientFilters(item, plan.clientSideFilters)) {
+          return; // silently OK — nothing matching to delete
+        }
+      }
       key = plan.key!;
     } else {
-      // Tier 2/3 (or incomplete Tier 1): find the item first
+      // Tier 2/3: find the item first
       const item = await resolveItemByPlan(
         docClient,
         tableName,

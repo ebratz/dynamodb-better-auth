@@ -272,6 +272,18 @@ export interface QueryPlan {
   needsFollowUpGetItem?: boolean;
   followUpKeyFields?: { pkField: string; skField?: string };
   clientSideFilters?: Array<{ field: string; operator: string; value: any }>;
+  /**
+   * The where clause is vacuously false (e.g. `in: []`) — the query can
+   * never match. Consumers short-circuit to an empty result without a
+   * DynamoDB call.
+   */
+  alwaysFalse?: boolean;
+  /**
+   * Client-side filters DynamoDB cannot express server-side (ends_with).
+   * Applied to fetched items AND-connected; page fetch helpers apply them
+   * before limit accounting.
+   */
+  postFilters?: Array<{ field: string; operator: string; value: any }>;
 }
 
 export interface ConvertedWhere {
@@ -284,6 +296,12 @@ export interface ConvertedWhere {
   /** When IN clauses exceeded 100 values, the expression is split into
    *  chunks joined with OR. Each chunk is bounded by ≤100 values. */
   chunked?: boolean;
+  /** The whole clause folds to constant false (e.g. `in: []`) — nothing
+   *  can match; callers short-circuit to empty results. */
+  alwaysFalse?: boolean;
+  /** Client-side post-filters for operators DynamoDB cannot express
+   *  (ends_with). AND-applied to fetched items. */
+  postFilters?: Array<{ field: string; operator: string; value: any }>;
 }
 
 export interface ExpressionNamesResult {

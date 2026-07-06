@@ -325,9 +325,10 @@ describe("deleteMany", () => {
     });
   });
 
-  it("returns partial count when retries exhausted with remaining UnprocessedItems", async () => {
+  it("throws PARTIAL_FAILURE when retries exhausted with remaining UnprocessedItems", async () => {
     // Scan returns 2 items. Every BatchWrite call returns 1 UnprocessedItem.
-    // After 3 attempts (initial + 2 retries), 1 item remains unprocessed = 1 deleted.
+    // After 3 attempts (initial + 2 retries), 1 item is still unprocessed —
+    // silently returning a shrunken count would hide the failure from callers.
     const users = [{ id: "u1", role: "admin" }, { id: "u2", role: "admin" }];
 
     const docClient = makeDocClient(async (cmd: any) => {
@@ -348,13 +349,12 @@ describe("deleteMany", () => {
     const config = makeConfig();
     const deleteMany = deleteManyMethod(docClient, config);
 
-    const result = await deleteMany({
-      model: "user",
-      where: [{ field: "role", operator: "eq", value: "admin" }],
-    });
-
-    // 2 items initially, 1 permanently unprocessed after 3 attempts = 1 deleted
-    expect(result).toBe(1);
+    await expect(
+      deleteMany({
+        model: "user",
+        where: [{ field: "role", operator: "eq", value: "admin" }],
+      }),
+    ).rejects.toMatchObject({ code: "PARTIAL_FAILURE" });
   });
 
   it("uses Tier 3 Scan when no index matches", async () => {

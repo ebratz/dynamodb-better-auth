@@ -71,9 +71,11 @@ describe("convertWhereClause", () => {
     expect(result.expressionAttributeValues[":v1"]).toBe("mod");
   });
 
-  it("in operator with empty array", () => {
+  it("in operator with empty array constant-folds to alwaysFalse", () => {
     const result = conv([{ field: "role", operator: "in", value: [] }]);
-    expect(result.expression).toBe("#n0 IN ()");
+    expect(result.expression).toBe("");
+    expect(result.alwaysFalse).toBe(true);
+    expect(result.expressionAttributeNames).toEqual({});
     expect(result.expressionAttributeValues).toEqual({});
   });
 
@@ -151,10 +153,22 @@ describe("convertWhereClause", () => {
     expect(result.expressionAttributeValues[":v0"]).toBe("admin@");
   });
 
-  // ── ends_with → throw ────────────────────────────────────────
-  it("ends_with throws UnsupportedOperatorError", () => {
+  // ── ends_with → contains() + postFilter ───────────────────────
+  it("ends_with emits a contains() fragment plus a client-side postFilter", () => {
+    const result = conv([{ field: "email", operator: "ends_with", value: ".com" }]);
+    expect(result.expression).toBe("contains(#n0, :v0)");
+    expect(result.expressionAttributeValues[":v0"]).toBe(".com");
+    expect(result.postFilters).toEqual([
+      { field: "email", operator: "ends_with", value: ".com" },
+    ]);
+  });
+
+  it("ends_with combined with an OR connector throws UnsupportedOperatorError", () => {
     expect(() =>
-      conv([{ field: "email", operator: "ends_with", value: ".com" }]),
+      conv([
+        { field: "email", operator: "ends_with", value: ".com" },
+        { field: "status", operator: "eq", value: "active", connector: "OR" },
+      ]),
     ).toThrow(/ends_with/);
   });
 
@@ -173,6 +187,9 @@ describe("convertWhereClause", () => {
   });
 
   // ── AND / OR connector grouping ──────────────────────────────
+  // Grouping is a strict left-to-right fold — matching
+  // @better-auth/memory-adapter — but parens are emitted ONLY when the
+  // connector changes mid-fold; homogeneous chains render flat.
   it("two AND clauses joined with AND", () => {
     const result = conv([
       { field: "status", operator: "eq", value: "active", connector: "AND" },
@@ -186,32 +203,91 @@ describe("convertWhereClause", () => {
       { field: "role", operator: "eq", value: "admin", connector: "OR" },
       { field: "role", operator: "eq", value: "mod" },
     ]);
-    // connector on first clause has no preceding clause to OR-join with.
-    // The two clauses form one AND group: (#n0 = :v0) AND (#n0 = :v1).
-    // Both reference the same field "role" so they dedupe to #n0.
+    // connector on the first clause is ignored (no preceding clause to
+    // join with); the second clause defaults to AND. Homogeneous chain
+    // (a single AND) renders flat: #n0 = :v0 AND #n0 = :v1.
     expect(result.expression).toBe("#n0 = :v0 AND #n0 = :v1");
   });
 
-  it("mixed AND+OR: OR splits consecutive AND groups", () => {
+  it("three clauses all OR-joined render flat, no parens", () => {
+    const result = conv([
+      { field: "role", operator: "eq", value: "admin" },
+      { field: "role", operator: "eq", value: "mod", connector: "OR" },
+      { field: "role", operator: "eq", value: "viewer", connector: "OR" },
+    ]);
+    expect(result.expression).toBe("#n0 = :v0 OR #n0 = :v1 OR #n0 = :v2");
+  });
+
+  it("mixed AND+OR: left-to-right fold, parens only where the connector changes", () => {
     const result = conv([
       { field: "status", operator: "eq", value: "active" },             // AND (implied)
       { field: "type", operator: "eq", value: "premium", connector: "OR" },
       { field: "role", operator: "eq", value: "admin" },
     ]);
-    // status(AND) forms group 1, the OR on type splits, role(AND) forms group 2.
-    // Result: status_group OR (type_group AND role_group)
-    expect(result.expression).toBe("#n0 = :v0 OR (#n1 = :v1 AND #n2 = :v2)");
+    // fold: acc = status; acc = status OR type (flat, was single fragment);
+    // then AND role — connector changed from OR to AND, so acc gets wrapped.
+    expect(result.expression).toBe("(#n0 = :v0 OR #n1 = :v1) AND #n2 = :v2");
   });
 
-  it("complex expression: A AND (B OR C) — connector on B creates OR group", () => {
+  it("complex expression: [A, B(OR), C(AND)] folds as (A OR B) AND C", () => {
     const result = conv([
       { field: "status", operator: "eq", value: "active", connector: "AND" },
-      { field: "role", operator: "eq", value: "admin", connector: "OR" }, 
+      { field: "role", operator: "eq", value: "admin", connector: "OR" },
       { field: "email", operator: "contains", value: "@company.com", connector: "AND" },
     ]);
-    // status(AND) → group 1, role(OR) splits, email(AND) → group 2.
-    // Result: (status) OR (role AND email)
-    expect(result.expression).toBe("#n0 = :v0 OR (#n1 = :v1 AND contains(#n2, :v2))");
+    expect(result.expression).toBe("(#n0 = :v0 OR #n1 = :v1) AND contains(#n2, :v2)");
+  });
+
+  it("regression: left-to-right fold matches @better-auth/memory-adapter semantics for [A, B(OR), C(AND)]", () => {
+    const result = conv([
+      { field: "a", operator: "eq", value: 1 },
+      { field: "b", operator: "eq", value: 2, connector: "OR" },
+      { field: "c", operator: "eq", value: 3, connector: "AND" },
+    ]);
+    expect(result.expression).toBe("(#n0 = :v0 OR #n1 = :v1) AND #n2 = :v2");
+  });
+
+  it("regression: [A(AND), B(AND), C(OR), D(AND)] wraps only the AND run before the OR switch", () => {
+    const result = conv([
+      { field: "a", operator: "eq", value: 1 },
+      { field: "b", operator: "eq", value: 2, connector: "AND" },
+      { field: "c", operator: "eq", value: 3, connector: "OR" },
+      { field: "d", operator: "eq", value: 4, connector: "AND" },
+    ]);
+    expect(result.expression).toBe(
+      "((#n0 = :v0 AND #n1 = :v1) OR #n2 = :v2) AND #n3 = :v3",
+    );
+  });
+
+  it("regression: in: [] alone constant-folds to alwaysFalse with empty maps", () => {
+    const result = conv([{ field: "role", operator: "in", value: [] }]);
+    expect(result.alwaysFalse).toBe(true);
+    expect(result.expression).toBe("");
+    expect(result.expressionAttributeNames).toEqual({});
+    expect(result.expressionAttributeValues).toEqual({});
+  });
+
+  it("regression: empty in: [] OR-ed with another clause drops the false fragment", () => {
+    const result = conv([
+      { field: "a", operator: "eq", value: 1 },
+      { field: "b", operator: "in", value: [], connector: "OR" },
+    ]);
+    expect(result.expression).toBe("#n0 = :v0");
+    expect(result.alwaysFalse).toBeUndefined();
+  });
+
+  it("regression: not_in: [] alone is vacuously true (empty expression, no alwaysFalse)", () => {
+    const result = conv([{ field: "status", operator: "not_in", value: [] }]);
+    expect(result.expression).toBe("");
+    expect(result.alwaysFalse).toBeUndefined();
+    expect(result.expressionAttributeNames).toEqual({});
+    expect(result.expressionAttributeValues).toEqual({});
+  });
+
+  it("regression: Date value in eq sanitizes to an ISO string", () => {
+    const date = new Date("2024-01-01T00:00:00.000Z");
+    const result = conv([{ field: "createdAt", operator: "eq", value: date as any }]);
+    expect(result.expressionAttributeValues[":v0"]).toBe(date.toISOString());
   });
 
   // ── Deduplication ────────────────────────────────────────────

@@ -1,11 +1,18 @@
 import { InvalidWhereError } from "../errors";
 import type { DynamoDBAdapterConfig, KeySchema } from "../types";
+import { toDefaultModelName } from "./model-name";
 
 /** Module-level cache: model → schema. Immutable once resolved. */
 const schemaCache = new Map<string, KeySchema>();
 
 /**
  * Returns the key schema (pkField, skField?) for a model.
+ *
+ * The incoming model name may be mapped (usePlural / custom modelName —
+ * better-auth applies getModelName before calling the adapter); it is
+ * normalized to the default name first. `config.keySchemas` is keyed by
+ * default model names.
+ *
  * Resolution order:
  *   1. config.keySchemas?.[model] (explicit override)
  *   2. Hardcoded core models
@@ -19,6 +26,8 @@ export function getKeySchema(
   model: string,
   config: DynamoDBAdapterConfig
 ): KeySchema {
+  model = toDefaultModelName(config, model);
+
   // 1. Explicit override — config-specific, never cached
   if (config.keySchemas?.[model]) {
     return config.keySchemas[model]!;
@@ -37,6 +46,10 @@ export function getKeySchema(
     account:      { pkField: "providerId", skField: "accountId" },
     verification: { pkField: "id" },
     emailLookups: { pkField: "email" },
+    // better-auth's built-in database rate limiting always reads/writes
+    // by `key` (never `id`) — without this, every rate-limited request
+    // degrades to a full-table Scan.
+    rateLimit:    { pkField: "key" },
   };
 
   if (coreSchemas[model]) {

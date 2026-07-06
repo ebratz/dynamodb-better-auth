@@ -156,15 +156,13 @@ describe("resolveKEYS_ONLY", () => {
     expect(docClient.send).toHaveBeenCalledTimes(2);
   });
 
-  it("max retry exhausted: 3 attempts still unprocessed → returns partial results", async () => {
+  it("max retry exhausted: 3 attempts still unprocessed → rejects with PARTIAL_FAILURE", async () => {
     const gsiItems = [
       { pk: "pk0" },
       { pk: "pk1" },
     ];
 
     // The mock returns pk0 when either key is requested (pk1 is never resolved).
-    // Each retry layer pushes its responses into the caller, so we get multiple
-    // copies of pk0 (one per attempt). After 3 attempts, pk1 is dropped.
     const docClient = {
       send: vi.fn().mockImplementation(async (cmd: any) => {
         const keys: any[] = cmd.RequestItems["test-table"].Keys;
@@ -184,19 +182,16 @@ describe("resolveKEYS_ONLY", () => {
       { pkField: "pk" },
       gsiItems,
     );
+    // Attach the rejection expectation immediately so the rejection is never
+    // briefly unobserved while the fake timers below are advanced.
+    const rejection = expect(promise).rejects.toMatchObject({ code: "PARTIAL_FAILURE" });
 
     // Max 3 retry attempts (initial + 2 retries) → 3 timing waits
     await vi.advanceTimersByTimeAsync(200);
     await vi.advanceTimersByTimeAsync(200);
     await vi.advanceTimersByTimeAsync(200);
 
-    const result = await promise;
-    // Each of the 3 attempts returns [pk0]; they accumulate via responses.push(...).
-    // Total = 3 copies. pk1 is never resolved and is dropped after retries exhausted.
-    // The duplicated pk0 entries are expected: _batchGetWithRetry returns best-effort
-    // and the caller (resolveKEYS_ONLY) receives the accumulated responses.
-    expect(result.length).toBeGreaterThanOrEqual(1);
-    expect(result[0].pk).toBe("pk0");
+    await rejection;
     // 3 total BatchGetCommand calls (initial + 2 retries before hitting MAX_RETRY_ATTEMPTS)
     expect(docClient.send).toHaveBeenCalledTimes(3);
   });

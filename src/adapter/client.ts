@@ -8,6 +8,7 @@
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient as DocClientType } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../types";
+import { toDefaultModelName } from "../helpers/model-name";
 import { DynamoAdapterError } from "../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -66,13 +67,18 @@ export function resolveDocClient(
 
 /**
  * Returns the configured table name for a model.
+ *
+ * The model name is normalized to its default (unmapped) form first —
+ * better-auth applies usePlural / modelName mapping before calling the
+ * adapter, while `config.tables` is keyed by default model names.
+ *
  * Throws DynamoAdapterError("UNKNOWN_MODEL") if missing.
  */
 export function getTableName(
   model: string,
   config: DynamoDBAdapterConfig,
 ): string {
-  const tableName = config.tables[model];
+  const tableName = config.tables[toDefaultModelName(config, model)];
   if (!tableName) {
     throw new DynamoAdapterError(
       "UNKNOWN_MODEL",

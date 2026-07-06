@@ -89,15 +89,17 @@ describe("resolveQueryPlan", () => {
     expect(plan.key).toEqual({ providerId: "google", accountId: "12345" });
   });
 
-  it("Tier 1: account with only PK (no SK) — still GetItem", () => {
+  it("Tier 1: account with only PK (no SK) falls through to Tier 3 scan — a partial key would crash GetItem", () => {
+    // providerId alone is not a complete composite key (needs accountId too)
+    // and isn't a declared GSI hash key, so it can't be Tier 1 or Tier 2.
     const plan = resolveQueryPlan(
       [{ field: "providerId", operator: "eq", value: "google" }],
       "account",
       baseConfig,
     );
-    expect(plan.tier).toBe(1);
-    expect(plan.key).toEqual({ providerId: "google" });
-    expect(plan.key).not.toHaveProperty("accountId");
+    expect(plan.tier).toBe(3);
+    expect(plan.operation).toBe("scan");
+    expect(plan.key).toBeUndefined();
   });
 
   // ── Tier 1 + extra conditions → client-side filter ───────────

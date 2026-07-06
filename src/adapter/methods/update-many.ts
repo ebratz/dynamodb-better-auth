@@ -54,7 +54,10 @@ export function updateManyMethod(
     if (Object.keys(updateData).length === 0) return 0;
 
     // ── Find matching items via shared helper ──────────────────
-    const items = await findAllItems(docClient, tableName, where, model, schema, config, { debugKey: "updateMany" });
+    const items = await findAllItems(docClient, tableName, where, model, schema, config, {
+      debugKey: "updateMany",
+      includeTier1: true,
+    });
 
     if (items.length === 0) return 0;
 
@@ -199,9 +202,19 @@ async function _batchPutUpdate(
       retries++;
     }
 
-    // Only count items that were actually processed
     const unprocessedInChunk = (unprocessed as any)?.[tableName]?.length ?? 0;
-    updated += chunk.length - unprocessedInChunk;
+    if (unprocessedInChunk > 0) {
+      // Silently returning a shrunken count would let callers believe
+      // every matched row was updated.
+      throw new DynamoAdapterError(
+        "PARTIAL_FAILURE",
+        `updateMany (unsafeBatchUpdate): ${unprocessedInChunk} of ${chunk.length} ` +
+          `writes in a batch remained unprocessed after ${MAX_RETRY_ATTEMPTS} ` +
+          `attempts (throttling). ${updated + chunk.length - unprocessedInChunk} ` +
+          `updates succeeded before the failure.`,
+      );
+    }
+    updated += chunk.length;
   }
 
   return updated;

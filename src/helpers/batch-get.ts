@@ -9,6 +9,7 @@
 
 import { BatchGetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { DynamoAdapterError } from "../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
@@ -85,8 +86,15 @@ async function _batchGetWithRetry(
       attempt + 1,
     );
     responses.push(...retryResults);
+  } else if (unprocessed && unprocessed.length > 0) {
+    // Silently dropping rows would make findMany on a sparse-projection
+    // GSI return fewer rows than actually matched.
+    throw new DynamoAdapterError(
+      "PARTIAL_FAILURE",
+      `BatchGet: ${unprocessed.length} of ${keys.length} keys remained ` +
+        `unprocessed after ${MAX_RETRY_ATTEMPTS} attempts (throttling).`,
+    );
   }
-  // After max retries, return what we have (best-effort).
 
   return responses;
 }
