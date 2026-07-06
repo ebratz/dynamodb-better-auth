@@ -67,7 +67,7 @@ describe("consumeOne", () => {
     expect(calls[0].ReturnValues).toBe("ALL_OLD");
   });
 
-  it("Tier 2: resolves key via GSI Query Limit:1, then deletes (review-gap fix A)", async () => {
+  it("Tier 2: resolves key via paginated GSI Query (Limit:100), then deletes (review-gap fix A)", async () => {
     const verificationItem = {
       id: "v1",
       identifier: "user@test.com",
@@ -110,7 +110,7 @@ describe("consumeOne", () => {
     // First call: GSI Query to resolve the key
     expect(calls[0]._type).toBe("QueryCommand");
     expect(calls[0].IndexName).toBe("identifier-index");
-    expect(calls[0].Limit).toBe(1);
+    expect(calls[0].Limit).toBe(100);
 
     // Second call: Delete with resolved key
     expect(calls[1]._type).toBe("DeleteCommand");

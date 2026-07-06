@@ -103,7 +103,7 @@ describe("delete", () => {
     // First: Query GSI
     expect(calls[0]._type).toBe("QueryCommand");
     expect(calls[0].IndexName).toBe("email-index");
-    expect(calls[0].Limit).toBe(1);
+    expect(calls[0].Limit).toBe(100);
     // Second: DeleteItem
     expect(calls[1]._type).toBe("DeleteCommand");
     expect(calls[1].Key).toEqual({ id: "u1" });
@@ -152,7 +152,7 @@ describe("delete", () => {
     // First: Scan
     expect(calls[0]._type).toBe("ScanCommand");
     expect(typeof calls[0].FilterExpression).toBe("string");
-    expect(calls[0].Limit).toBe(1);
+    expect(calls[0].Limit).toBe(100);
     // Second: DeleteItem
     expect(calls[1]._type).toBe("DeleteCommand");
     expect(calls[1].Key).toEqual({ id: "u1" });
@@ -233,7 +233,7 @@ describe("delete", () => {
     expect(scan.FilterExpression).toMatch(/#n0 IN \(:v0, :v1, :v2\)/);
   });
 
-  it("Tier 3: mixed AND+OR connectors uses convertWhereClause expression format", async () => {
+  it("Tier 3: mixed AND+OR connectors uses convertWhereClause left-fold OR format", async () => {
     const calls: any[] = [];
     const docClient = makeDocClient(async (cmd: any) => {
       calls.push(cmd);
@@ -254,11 +254,11 @@ describe("delete", () => {
     });
 
     const scan = calls.find((c) => c._type === "ScanCommand");
-    // convertWhereClause groups by OR separators: three single-element groups joined with OR
-    expect(scan.FilterExpression).toMatch(/^#n\d+ = :v\d+ OR #n\d+ = :v\d+ OR #n\d+ = :v\d+$/);
+    // Left-fold with minimal parens: homogeneous OR chains render flat.
+    expect(scan.FilterExpression).toBe("#n0 = :v0 OR #n1 = :v1 OR #n2 = :v2");
   });
 
-  it("Tier 3 buildSimpleFilter: all-OR connectors join with OR", async () => {
+  it("Tier 3 buildSimpleFilter: all-OR connectors render as a flat OR chain", async () => {
     const calls: any[] = [];
     const docClient = makeDocClient(async (cmd: any) => {
       calls.push(cmd);
@@ -278,6 +278,7 @@ describe("delete", () => {
     });
 
     const scan = calls.find((c) => c._type === "ScanCommand");
-    expect(scan.FilterExpression).toMatch(/#n0 = :v0 OR #n1 = :v1/);
+    // Left-fold with minimal parens: [A, B(OR)] → flat OR join.
+    expect(scan.FilterExpression).toBe("#n0 = :v0 OR #n1 = :v1");
   });
 });

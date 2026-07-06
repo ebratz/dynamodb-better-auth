@@ -636,7 +636,7 @@ try {
 | `tables` | `{ user, session, account, verification } & Record<string,string>` | *required* | Table name mapping. Plugin models can be added freely. |
 | `tables.emailLookups` | `string` | — | Required when `enableEmailUniqueness: true` |
 | `indexes` | `Record<string, Record<string, GsiDeclaration>>` | `{}` | GSI declarations — controls Tier-2 vs Tier-3 routing |
-| `keySchemas` | `Record<string, KeySchemaOverride>` | `{}` | Override default PK/SK per model (plugin models default to `id`) |
+| `keySchemas` | `Record<string, KeySchemaOverride>` | `{}` | Override default PK/SK per model (plugin models default to `id`; built-in `rateLimit` defaults to `key` — create its table with PK `key` when using `rateLimit.storage: "database"`) |
 | `enableEmailUniqueness` | `boolean` | `false` | Atomic email-claim enforcement via sidecar table |
 | `warnOnLargeCount` | `number` | `10000` | Emit `debugLogs` warning when `count()` scans more than this many items |
 | `unsafeBatchUpdate` | `boolean` | `false` | Use `BatchWriteItem`+`PutItem` in `updateMany` (faster, full-item LWW) |

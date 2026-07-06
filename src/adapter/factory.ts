@@ -10,6 +10,7 @@ import type { DynamoDBAdapterConfig } from "../types";
 import { resolveDocClient, getTableName } from "./client";
 import { applyMiddleware } from "../helpers/apply-middleware";
 import { validateConfig } from "../helpers/validate-config";
+import { registerModelNameResolver } from "../helpers/model-name";
 import { measureLatency } from "../helpers/metrics";
 import { createMethod } from "./methods/create";
 import { findOneMethod } from "./methods/find-one";
@@ -148,13 +149,27 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
     },
 
     adapter: (helpers: any = {}) => {
-      const { transformInput, transformOutput, getDefaultModelName } = helpers;
+      const {
+        transformInput,
+        transformOutput,
+        getDefaultModelName,
+        transformWhereClause,
+        getModelName,
+      } = helpers;
       if (transformInput && transformOutput && getDefaultModelName) {
         helpersRef.current = {
           transformInput,
           transformOutput,
           getDefaultModelName,
+          transformWhereClause,
+          getModelName,
         };
+      }
+      // better-auth maps model names (usePlural / modelName overrides)
+      // BEFORE calling adapter methods; config maps are keyed by default
+      // names. Register the reverse mapping for all config lookups.
+      if (getDefaultModelName) {
+        registerModelNameResolver(forgivingConfig, getDefaultModelName);
       }
       return nativeMethods as any;
     },

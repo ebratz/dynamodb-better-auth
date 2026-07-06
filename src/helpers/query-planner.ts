@@ -18,6 +18,7 @@ import type { DynamoDBAdapterConfig, QueryPlan, KeySchema } from "../types";
 import { getKeySchema } from "./key-builder";
 import { convertWhereClause } from "./where-converter";
 import { mergeKeyAndFilterExpressions } from "./merge-expressions";
+import { toDefaultModelName } from "./model-name";
 import { DynamoAdapterError } from "../errors";
 
 // ── Where clause shape ─────────────────────────────────────────
@@ -58,6 +59,8 @@ export function resolveFilter(
   expression: string;
   expressionAttributeNames: Record<string, string>;
   expressionAttributeValues: Record<string, any>;
+  alwaysFalse?: boolean;
+  postFilters?: Array<{ field: string; operator: string; value: any }>;
 } | undefined {
   if (!where || where.length === 0) return undefined;
   const result = convertWhereClause(where, {
@@ -65,11 +68,20 @@ export function resolveFilter(
     getFieldName: identityGetFieldName,
     getFieldAttributes: identityGetFieldAttributes,
   });
-  if (!result.expression) return undefined;
+  if (result.alwaysFalse) {
+    return {
+      expression: "",
+      expressionAttributeNames: {},
+      expressionAttributeValues: {},
+      alwaysFalse: true,
+    };
+  }
+  if (!result.expression && !result.postFilters) return undefined;
   return {
     expression: result.expression,
     expressionAttributeNames: result.expressionAttributeNames,
     expressionAttributeValues: result.expressionAttributeValues,
+    ...(result.postFilters ? { postFilters: result.postFilters } : {}),
   };
 }
 
@@ -82,7 +94,10 @@ export function resolveQueryPlan(
   model: string,
   config: DynamoDBAdapterConfig,
 ): QueryPlan {
-  const tableName = config.tables[model];
+  // Normalize usePlural / modelName mapping — config maps are keyed by
+  // default model names.
+  const defaultModel = toDefaultModelName(config, model);
+  const tableName = config.tables[defaultModel];
   if (!tableName) {
     throw new DynamoAdapterError(
       "UNKNOWN_MODEL",
@@ -91,7 +106,18 @@ export function resolveQueryPlan(
   }
 
   const schema = getKeySchema(model, config);
-  const indexes = config.indexes?.[model] ?? {};
+  const indexes = config.indexes?.[defaultModel] ?? {};
+
+  // OR semantics cannot be expressed through a GetItem key or a
+  // KeyConditionExpression (both are implicitly ANDed with any filter).
+  // Any OR connector → straight to Tier 3, where convertWhereClause
+  // renders the full expression with correct grouping.
+  const hasOrConnector = where.some(
+    (w, i) => i > 0 && w.connector === "OR",
+  );
+  if (hasOrConnector) {
+    return fallbackTier3(where, tableName, model);
+  }
 
   return (
     tryTier1(where, schema, tableName) ??
@@ -105,33 +131,38 @@ export function resolveQueryPlan(
 /**
  * Attempts a direct GetItem when the primary key is fully known.
  *
- * Returns a plan if the PK field (and optional SK for composite keys)
- * is present with an eq operator. Extra where clauses beyond the key
- * are flagged for client-side filtering since GetItem has no FilterExpression.
+ * Returns a plan only when the key is COMPLETE: the PK field (and the SK
+ * for composite-key models) present with an eq operator. GetItem requires
+ * the full key — a partial key is a ValidationException on real DynamoDB,
+ * so incomplete keys fall through to Tier 2/3 instead.
+ *
+ * Extra where clauses beyond the key are flagged for client-side filtering
+ * since GetItem has no FilterExpression. Clauses are matched by identity,
+ * not field name, so a second clause on the key field (e.g. `id ne X`)
+ * is preserved as a filter instead of being silently dropped.
  */
 function tryTier1(
   where: WhereEntry[],
   schema: KeySchema,
   tableName: string,
 ): QueryPlan | null {
-  const pkEq = findEqClause(where, schema.pkField);
-  if (pkEq === undefined) return null;
+  const pkClause = findEqClauseEntry(where, schema.pkField);
+  if (!pkClause) return null;
 
-  const key: Record<string, any> = { [schema.pkField]: pkEq };
-  const usedFields = new Set([schema.pkField]);
+  const key: Record<string, any> = { [schema.pkField]: pkClause.value };
+  const usedClauses = new Set<WhereEntry>([pkClause]);
 
   if (schema.skField) {
-    const skEq = findEqClause(where, schema.skField);
-    if (skEq !== undefined) {
-      key[schema.skField] = skEq;
-      usedFields.add(schema.skField);
-    }
-    // SK is optional — if not present, key is still valid.
+    const skClause = findEqClauseEntry(where, schema.skField);
+    // Composite key without SK → key incomplete → not a GetItem.
+    if (!skClause) return null;
+    key[schema.skField] = skClause.value;
+    usedClauses.add(skClause);
   }
 
   // Extra clauses beyond the key must be filtered client-side
   // because GetItem has no FilterExpression.
-  const extraClauses = where.filter((w) => !usedFields.has(w.field));
+  const extraClauses = where.filter((w) => !usedClauses.has(w));
 
   if (extraClauses.length > 0) {
     return {
@@ -178,8 +209,8 @@ function tryTier2(
   model: string,
 ): QueryPlan | null {
   for (const [, gsi] of Object.entries(indexes)) {
-    const hashEq = findEqClause(where, gsi.hashKey);
-    if (hashEq === undefined) continue;
+    const hashClause = findEqClauseEntry(where, gsi.hashKey);
+    if (!hashClause) continue;
 
     // Found a GSI whose hash key has an eq match.
     const keyConditionClauses: WhereEntry[] = [];
@@ -189,24 +220,26 @@ function tryTier2(
     keyConditionClauses.push({
       field: gsi.hashKey,
       operator: "eq",
-      value: hashEq,
+      value: hashClause.value,
     });
 
-    // Sort key: if present and has a comparable operator,
-    // include in KeyConditionExpression. Otherwise filter.
+    // Sort key: the FIRST clause with a key-condition-capable operator
+    // goes into KeyConditionExpression (DynamoDB allows only one condition
+    // per sort key). Everything else — including additional clauses on the
+    // hash/range key (matched by identity, not field name) — is a filter.
+    let rangeKeyConsumed = false;
     for (const w of where) {
-      if (w.field === gsi.hashKey) continue; // already handled
+      if (w === hashClause) continue; // the clause consumed as hash key
 
-      if (gsi.rangeKey && w.field === gsi.rangeKey) {
+      if (gsi.rangeKey && w.field === gsi.rangeKey && !rangeKeyConsumed) {
         const op = (w.operator ?? "eq").toLowerCase();
         if (isSortKeyOperator(op)) {
           keyConditionClauses.push(w);
-        } else {
-          filterClauses.push(w);
+          rangeKeyConsumed = true;
+          continue;
         }
-      } else {
-        filterClauses.push(w);
       }
+      filterClauses.push(w);
     }
 
     // Build KeyConditionExpression and FilterExpression with collision-free
@@ -219,19 +252,26 @@ function tryTier2(
     });
 
     let filterExpr = "";
+    let filterAlwaysFalse = false;
+    let postFilters: Array<{ field: string; operator: string; value: any }> | undefined;
     if (filterClauses.length > 0) {
       const fResult = convertWhereClause(filterClauses, {
         model,
         getFieldName: identityGetFieldName,
         getFieldAttributes: identityGetFieldAttributes,
       });
+      filterAlwaysFalse = fResult.alwaysFalse === true;
+      postFilters = fResult.postFilters;
       const merged = mergeKeyAndFilterExpressions(kcOnly, fResult);
       filterExpr = merged.filterExpression;
       kcOnly.expressionAttributeNames = merged.names;
       kcOnly.expressionAttributeValues = merged.values;
     }
 
-    const isKeysOnly = gsi.projection === "KEYS_ONLY";
+    // Sparse projections (KEYS_ONLY or { include }) don't carry every
+    // base-table attribute — resolve full rows via follow-up GetItem.
+    const isSparseProjection =
+      gsi.projection !== undefined && gsi.projection !== "ALL";
 
     return {
       tier: 2,
@@ -242,7 +282,9 @@ function tryTier2(
       filterExpression: filterExpr || undefined,
       expressionAttributeNames: kcOnly.expressionAttributeNames,
       expressionAttributeValues: kcOnly.expressionAttributeValues,
-      ...(isKeysOnly
+      ...(filterAlwaysFalse ? { alwaysFalse: true } : {}),
+      ...(postFilters ? { postFilters } : {}),
+      ...(isSparseProjection
         ? {
             needsFollowUpGetItem: true,
             followUpKeyFields: {
@@ -281,20 +323,21 @@ function fallbackTier3(
     filterExpression: scanResult.expression || undefined,
     expressionAttributeNames: scanResult.expressionAttributeNames,
     expressionAttributeValues: scanResult.expressionAttributeValues,
-    needsClientSideSort: where.length > 0,
+    ...(scanResult.alwaysFalse ? { alwaysFalse: true } : {}),
+    ...(scanResult.postFilters ? { postFilters: scanResult.postFilters } : {}),
   };
 }
 
 // ── Internal helpers ────────────────────────────────────────────
 
-function findEqClause(
+function findEqClauseEntry(
   where: WhereEntry[],
   field: string,
-): WhereEntry["value"] | undefined {
+): WhereEntry | undefined {
   for (const w of where) {
     if (w.field === field) {
       const op = (w.operator ?? "eq").toLowerCase();
-      if (op === "eq") return w.value;
+      if (op === "eq") return w;
     }
   }
   return undefined;

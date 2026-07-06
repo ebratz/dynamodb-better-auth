@@ -332,13 +332,16 @@ describe("edge cases", () => {
       expect(result.expressionAttributeValues[":v1"]).toBe("banned");
     });
 
-    it("handles empty NOT IN array", () => {
+    it("handles empty NOT IN array as vacuously true (empty expression)", () => {
       const result = convertWhereClause(
         [{ field: "status", operator: "not_in" as any, value: [] }],
         baseConvOpts,
       );
 
-      expect(result.expression).toBe("NOT #n0 IN ()");
+      expect(result.expression).toBe("");
+      expect(result.alwaysFalse).toBeUndefined();
+      expect(result.expressionAttributeNames).toEqual({});
+      expect(result.expressionAttributeValues).toEqual({});
     });
 
     it("not_in with >100 values AND-joins NOT-IN blocks", () => {

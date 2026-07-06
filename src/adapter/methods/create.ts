@@ -15,6 +15,8 @@ import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { buildExpressionNames } from "../../helpers/expression-names";
 import { sanitizeForWrite } from "../../helpers/update-item";
+import { toDefaultModelName } from "../../helpers/model-name";
+import { getTableName } from "../client";
 import { DynamoAdapterError } from "../../errors";
 import { createUserWithEmailUniqueness } from "../../email-uniqueness";
 
@@ -29,13 +31,14 @@ export function createMethod(
   }): Promise<Record<string, any>> => {
     const { model, data } = args;
 
-    // Fall back to model name when not explicitly configured
-    const tableName = config.tables[model] ?? model;
+    const tableName = getTableName(model, config);
 
     // ── Email uniqueness path ──────────────────────────────────
+    // Model check runs on the DEFAULT name — better-auth may pass a
+    // mapped name (usePlural / modelName overrides).
     if (
       config.enableEmailUniqueness &&
-      model === "user" &&
+      toDefaultModelName(config, model) === "user" &&
       data.email &&
       config.tables.emailLookups
     ) {

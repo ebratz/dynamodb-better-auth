@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { findManyMethod } from "../src/adapter/methods/find-many";
-import { UnsupportedOptionError, DynamoAdapterError } from "../src/errors";
+import { DynamoAdapterError } from "../src/errors";
 import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
@@ -59,8 +59,20 @@ describe("findMany", () => {
     expect(result.length).toBe(2);
   });
 
-  it("Tier 2: throws UnsupportedOptionError when offset > 0", async () => {
-    const docClient = makeDocClient([{ Items: [] }]);
+  it("Tier 2: offset > 0 over-fetches (limit+offset) and discards items client-side", async () => {
+    const calls: any[] = [];
+    const docClient = {
+      send: vi.fn().mockImplementation(async (cmd: any) => {
+        calls.push(cmd);
+        return {
+          Items: [
+            { id: "u1", email: "a@b.com" },
+            { id: "u2", email: "a@b.com" },
+            { id: "u3", email: "a@b.com" },
+          ],
+        };
+      }),
+    } as any;
     const config = makeConfig({
       indexes: {
         user: { email: { indexName: "email-index", hashKey: "email" } },
@@ -68,13 +80,19 @@ describe("findMany", () => {
     });
     const findMany = findManyMethod(docClient, config);
 
-    await expect(
-      findMany({
-        model: "user",
-        where: [{ field: "email", operator: "eq", value: "a@b.com" }],
-        offset: 10,
-      })
-    ).rejects.toThrow(UnsupportedOptionError);
+    const result = await findMany({
+      model: "user",
+      where: [{ field: "email", operator: "eq", value: "a@b.com" }],
+      offset: 1,
+      limit: 2,
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result[0]!.id).toBe("u2");
+    expect(result[1]!.id).toBe("u3");
+
+    const queryCall = calls.find((c: any) => c._type === "QueryCommand");
+    expect(queryCall.Limit).toBe(3); // limit(2) + offset(1)
   });
 
   it("Tier 2: paginated Query across ExclusiveStartKey chain", async () => {
@@ -260,6 +278,45 @@ describe("findMany", () => {
     expect(result[1]!.name).toBe("Bob");
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+
+  it("Tier 2: sortBy mismatch with limit fetches ALL items (no Limit on Query) then sorts and slices to top-N", async () => {
+    const calls: any[] = [];
+    const docClient = {
+      send: vi.fn().mockImplementation(async (cmd: any) => {
+        calls.push(cmd);
+        return {
+          Items: [
+            { id: "u1", email: "a@b.com", name: "Frank" },
+            { id: "u2", email: "a@b.com", name: "Alice" },
+            { id: "u3", email: "a@b.com", name: "Eve" },
+            { id: "u4", email: "a@b.com", name: "Bob" },
+            { id: "u5", email: "a@b.com", name: "Dave" },
+            { id: "u6", email: "a@b.com", name: "Carol" },
+          ],
+        };
+      }),
+    } as any;
+    const config = makeConfig({
+      indexes: {
+        user: { email: { indexName: "email-index", hashKey: "email" } },
+      },
+    });
+    const findMany = findManyMethod(docClient, config);
+
+    const result = await findMany({
+      model: "user",
+      where: [{ field: "email", operator: "eq", value: "a@b.com" }],
+      sortBy: { field: "name", direction: "asc" }, // name is NOT the sort key
+      limit: 2,
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result[0]!.name).toBe("Alice");
+    expect(result[1]!.name).toBe("Bob");
+
+    const queryCall = calls.find((c: any) => c._type === "QueryCommand");
+    expect(queryCall.Limit).toBeUndefined();
   });
 
   it("Tier 3: Scan with sortBy fetches all pages and sorts client-side", async () => {

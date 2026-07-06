@@ -277,7 +277,7 @@ describe("tx-methods", () => {
       expect(ctx.hasEmailUniqueness.value).toBe(true);
     });
 
-    it("returns update data only when preState is null (no merge)", async () => {
+    it("returns null and buffers nothing when preState is null", async () => {
       const ctx = makeCtx({ findOneResult: null });
 
       const result = await txUpdate(ctx, {
@@ -286,13 +286,12 @@ describe("tx-methods", () => {
         update: { name: "NewName" },
       });
 
-      // Result is the update data itself, not merged with null
-      expect(result).toEqual({ name: "NewName" });
-      // User's id is NOT in the result (it came from preState which was null)
-      expect(result).not.toHaveProperty("id");
+      // Missing row: null, no doomed conditional Update buffered.
+      expect(result).toBeNull();
+      expect(ctx.writeBuffer.length).toBe(0);
     });
 
-    it("returns update data only when preState is undefined", async () => {
+    it("returns null and buffers nothing when preState is undefined", async () => {
       const ctx = makeCtx({ findOneResult: undefined });
 
       const result = await txUpdate(ctx, {
@@ -301,7 +300,8 @@ describe("tx-methods", () => {
         update: { name: "NewName" },
       });
 
-      expect(result).toEqual({ name: "NewName" });
+      expect(result).toBeNull();
+      expect(ctx.writeBuffer.length).toBe(0);
     });
 
     it("throws TRANSACTION_FAILED when buffer capacity exceeded", async () => {
@@ -388,7 +388,7 @@ describe("tx-methods", () => {
       { id: "u2", name: "Bob", role: "user" },
     ];
 
-    it("reads items via findMany and pushes one Update per item", async () => {
+    it("reads items via findMany (limit: 1001) and pushes one Update per item with attribute_exists guard", async () => {
       const ctx = makeCtx({ findManyResult: items });
 
       const count = await txUpdateMany(ctx, {
@@ -401,13 +401,16 @@ describe("tx-methods", () => {
       expect(ctx.nativeAdapter.findMany).toHaveBeenCalledWith({
         model: "user",
         where: [{ field: "role", operator: "eq", value: "user" }],
+        limit: 1001,
       });
       expect(ctx.writeBuffer.length).toBe(2);
 
-      // Each item gets its own Update
+      // Each item gets its own Update, guarded against upsert-resurrection
       expect(ctx.writeBuffer[0].Update.Key).toEqual({ id: "u1" });
       expect(ctx.writeBuffer[0].Update.TableName).toBe("test-users");
       expect(ctx.writeBuffer[0].Update.UpdateExpression).toContain("SET");
+      expect(ctx.writeBuffer[0].Update.ConditionExpression).toBe("attribute_exists(#pk)");
+      expect(ctx.writeBuffer[0].Update.ExpressionAttributeNames).toMatchObject({ "#pk": "id" });
 
       expect(ctx.writeBuffer[1].Update.Key).toEqual({ id: "u2" });
     });
@@ -449,6 +452,22 @@ describe("tx-methods", () => {
       await expect(
         txUpdateMany(ctx2, { model: "user", where: [], update: { x: true } }),
       ).rejects.toThrow(/more than 100/);
+    });
+
+    it("throws TOO_MANY_ITEMS when findMany returns more than maxUpdateManyItems (1001)", async () => {
+      const manyItems = Array.from({ length: 1001 }, (_, i) => ({ id: `u${i}` }));
+      const ctx = makeCtx({ findManyResult: manyItems });
+
+      await expect(
+        txUpdateMany(ctx, {
+          model: "user",
+          where: [{ field: "role", operator: "eq", value: "user" }],
+          update: { role: "admin" },
+        }),
+      ).rejects.toMatchObject({ code: "TOO_MANY_ITEMS" });
+
+      // Guard fires before any Update is pushed.
+      expect(ctx.writeBuffer.length).toBe(0);
     });
   });
 

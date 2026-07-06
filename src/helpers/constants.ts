@@ -22,3 +22,13 @@ export const RETRY_JITTER_MS = 50;
 
 /** Default limit for findMany when none specified. */
 export const DEFAULT_FIND_MANY_LIMIT = 100;
+
+/**
+ * Page size for single-item resolution (resolveItemByPlan).
+ * DynamoDB applies `Limit` BEFORE FilterExpression, so single-item lookups
+ * must paginate; this caps items evaluated per page while looping.
+ */
+export const SINGLE_ITEM_PAGE_SIZE = 100;
+
+/** Default cap on items examined by a paginated single-item lookup. */
+export const DEFAULT_MAX_SCAN_ITEMS = 10_000;

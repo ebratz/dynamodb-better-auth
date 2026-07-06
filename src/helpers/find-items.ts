@@ -18,8 +18,10 @@ import type { WhereClause } from "../types";
 import { resolveQueryPlan } from "./query-planner";
 import { resolveKEYS_ONLY } from "./batch-get";
 import { fetchAllByPlan, type FetchAllPlan } from "./fetch-all";
+import { matchesClientFilters } from "./resolve-item";
 import { shouldLog } from "./debug-log";
 import { getLogger } from "./logger";
+import { DynamoAdapterError } from "../errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyRecord = Record<string, any>;
@@ -49,8 +51,21 @@ export async function findAllItems(
 
   const plan = resolveQueryPlan(where, model, config);
 
-  // ── Tier 1: GetItem (opt-in) ────────────────────────────────
-  if (opts?.includeTier1 && plan.operation === "getItem") {
+  // Vacuously-false where clause (e.g. `in: []`) — nothing can match.
+  if (plan.alwaysFalse) return [];
+
+  // ── Tier 1: GetItem ─────────────────────────────────────────
+  if (plan.operation === "getItem") {
+    if (!opts?.includeTier1) {
+      // A Tier-1 plan carries no filter expression; letting it fall
+      // through to fetchAllByPlan would run an UNFILTERED table Scan
+      // and return every row. Callers must opt in explicitly.
+      throw new DynamoAdapterError(
+        "INVALID_PLAN",
+        `findAllItems resolved a Tier-1 (GetItem) plan for "${model}" but ` +
+          "the caller did not opt into Tier-1 handling (includeTier1).",
+      );
+    }
     const result = await docClient.send(
       new GetCommand({
         TableName: tableName,
@@ -58,7 +73,13 @@ export async function findAllItems(
       }),
     );
     const item = result.Item as any;
-    return item ? [item] : [];
+    if (!item) return [];
+    // Extra where clauses beyond the key — GetItem has no FilterExpression,
+    // so verify client-side before including the item.
+    if (plan.needsClientSideFilter && plan.clientSideFilters) {
+      if (!matchesClientFilters(item, plan.clientSideFilters)) return [];
+    }
+    return [item];
   }
 
   // ── Tier 2: GSI Query ───────────────────────────────────────

@@ -118,8 +118,14 @@ async function _batchDeleteWithRetry(
     );
     deletedCount = deletedCount - unprocessedKeys.length + retryDeleted;
   } else if (unprocessed && unprocessed.length > 0) {
-    // Max attempts reached — some items not deleted
-    deletedCount -= unprocessed.length;
+    // Max attempts reached — silently returning a shrunken count would
+    // let callers believe every matched row was deleted.
+    throw new DynamoAdapterError(
+      "PARTIAL_FAILURE",
+      `deleteMany: ${unprocessed.length} of ${keys.length} deletes in a batch ` +
+        `remained unprocessed after ${MAX_RETRY_ATTEMPTS} attempts (throttling). ` +
+        `${deletedCount - unprocessed.length} deletes in this batch succeeded.`,
+    );
   }
 
   return deletedCount;

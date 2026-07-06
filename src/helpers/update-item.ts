@@ -51,10 +51,15 @@ export function buildUpdateExpression(
 // ── Write Sanitizer ─────────────────────────────────────────────
 
 /**
- * Converts a single value for DynamoDB write compatibility.
+ * Converts a single value for DynamoDB compatibility.
  * Date → ISO string; everything else passes through.
+ *
+ * Used for both write payloads and where-clause values — the
+ * DocumentClient marshaller rejects Date instances
+ * (`convertClassInstanceToMap: false`), so every value that reaches
+ * ExpressionAttributeValues must be converted.
  */
-function sanitizeValue(val: unknown): any {
+export function sanitizeValue(val: unknown): any {
   return val instanceof Date ? val.toISOString() : val;
 }
 
