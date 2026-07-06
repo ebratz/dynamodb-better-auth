@@ -4,6 +4,32 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.6...v0.2.0) (2026-07-06)
+
+
+### Features
+
+* initial DynamoDB adapter for Better Auth ([9cdfa17](https://github.com/ebratz/dynamodb-better-auth/commit/9cdfa172ce59e614a4222f9714563196da56597e))
+
+
+### Bug Fixes
+
+* **adapter:** apply transformInput to buffered transactional writes ([59a0510](https://github.com/ebratz/dynamodb-better-auth/commit/59a05109f26fe2b26130de85f14d7949f52b1e89))
+* **adapter:** omit empty ExpressionAttribute maps to avoid DDB ValidationException ([6eed843](https://github.com/ebratz/dynamodb-better-auth/commit/6eed843ebac2ddbecc3593ff681bfeea015b4828)), closes [#3](https://github.com/ebratz/dynamodb-better-auth/issues/3)
+* **ci:** add --legacy-peer-deps to resolve AWS SDK peer dependency conflicts ([be01d20](https://github.com/ebratz/dynamodb-better-auth/commit/be01d2017942c66a62323fb69d6db8e20436e8c0))
+* **ci:** add overrides to resolve @better-auth/test-utils peer-dep conflict ([84fc4f0](https://github.com/ebratz/dynamodb-better-auth/commit/84fc4f020bc127aef4d5ae305d6d3218ed07b7fb))
+* **ci:** delete lockfile before install to bypass npm bug [#4828](https://github.com/ebratz/dynamodb-better-auth/issues/4828) ([b051490](https://github.com/ebratz/dynamodb-better-auth/commit/b0514901d8614a9f9141b0b8b4dd7a4c9074c2e9))
+* **ci:** use npm install instead of npm ci to work around rollup platform deps ([6210f38](https://github.com/ebratz/dynamodb-better-auth/commit/6210f387a3894ba611685af6c4506dd3148ce577))
+* commit resolveFilter export needed by update-many refactor ([02cd57f](https://github.com/ebratz/dynamodb-better-auth/commit/02cd57f7d20d75eb6d68b92940749c90db47b4fc))
+* **query-planner:** remap :vX value placeholder collisions when merging key and filter expressions ([0313fde](https://github.com/ebratz/dynamodb-better-auth/commit/0313fded44e4f6bcb740238ba925e0683b23ed2f))
+
+
+### Refactoring
+
+* centralize query planning in update, update-many, delete ([b69aaed](https://github.com/ebratz/dynamodb-better-auth/commit/b69aaed5d5fa4d3d1e716469bf8dbbd285bf3112))
+* eliminate remaining duplication with shared helpers ([2f73084](https://github.com/ebratz/dynamodb-better-auth/commit/2f73084b5977e0bd591e4dc34a06156659ba4644))
+* implement all 5 SOLID audit fixes via parallel agents ([ee6664a](https://github.com/ebratz/dynamodb-better-auth/commit/ee6664afce2062dafb9ed4374a06f40bb267a79a))
+
 ## [0.1.6](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.5...v0.1.6) (2026-07-05)
 
 
