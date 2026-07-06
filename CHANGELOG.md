@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0](https://github.com/ebratz/dynamodb-better-auth/compare/v0.2.0...v1.0.0) (2026-07-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **adapter:** bulk operations (updateMany/deleteMany/KEYS_ONLY resolution) now throw PARTIAL_FAILURE when DynamoDB leaves items unprocessed after retries instead of silently returning shrunken results; findMany offset on Tier-2 queries no longer throws UnsupportedOptionError (it is emulated); transaction cancellation errors surface distinct codes instead of a single TRANSACTION_FAILED.
+
+### Bug Fixes
+
+* **adapter:** enforce better-auth adapter contract in planner, reads, and transactions ([#8](https://github.com/ebratz/dynamodb-better-auth/issues/8)) ([e7dd8c4](https://github.com/ebratz/dynamodb-better-auth/commit/e7dd8c42a434f9882d583f2ca136d24c163e3d5a))
+
 ## [0.2.0](https://github.com/ebratz/dynamodb-better-auth/compare/v0.1.6...v0.2.0) (2026-07-06)
 
 
