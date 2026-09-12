@@ -15,6 +15,7 @@ import type { DynamoDBAdapterConfig } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { buildExpressionNames } from "../../helpers/expression-names";
 import { sanitizeForWrite } from "../../helpers/update-item";
+import { withTtlAttribute } from "../../helpers/ttl";
 import { toDefaultModelName } from "../../helpers/model-name";
 import { getTableName } from "../client";
 import { DynamoAdapterError } from "../../errors";
@@ -53,8 +54,9 @@ export function createMethod(
     const placeholderKeys = Object.keys(names);
     const placeholder = placeholderKeys.length > 0 ? placeholderKeys[0]! : "#n0";
 
-    // Convert Date → ISO string for DocumentClient marshalling
-    const item = sanitizeForWrite(data);
+    // Convert Date → ISO string for DocumentClient marshalling, then attach
+    // the numeric TTL attribute for models that declare a TTL field.
+    const item = withTtlAttribute(config, model, sanitizeForWrite(data));
 
     try {
       await docClient.send(

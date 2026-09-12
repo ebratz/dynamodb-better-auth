@@ -65,7 +65,7 @@ async function main() {
         Projection: { ProjectionType: "ALL" },
       },
     ],
-    TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true },
+    TimeToLiveSpecification: { AttributeName: "ttl", Enabled: true },
   });
 
   // ── Accounts ───────────────────────────────────────────────
@@ -112,7 +112,7 @@ async function main() {
         Projection: { ProjectionType: "ALL" },
       },
     ],
-    TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true },
+    TimeToLiveSpecification: { AttributeName: "ttl", Enabled: true },
   });
 
   console.log("\nAll tables ready.\n");

@@ -12,7 +12,7 @@ import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { toDefaultModelName } from "../helpers/model-name";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
-import { buildTxKey } from "./tx-key-builder";
+import { tryBuildTxKey } from "./tx-key-builder";
 import type { TransactionContext } from "./tx-types";
 import type { WhereClause } from "../types";
 
@@ -35,7 +35,17 @@ export async function txDelete(
   const tableName = ctx.getTable(model);
   const schema = getKeySchema(model, ctx.config);
 
-  const key = buildTxKey(where, schema, model);
+  // Non-PK where: pre-resolve through the planner, mirroring tx-update.
+  // Missing row is a no-op — buffering a Delete for a row we could not
+  // find would either silently succeed (no condition) or fail the whole
+  // transaction (with one), and neither matches delete-missing semantics.
+  let key = tryBuildTxKey(where, schema);
+  if (!key) {
+    const found = await ctx.nativeAdapter.findOne({ model: mappedModel, where });
+    if (!found) return;
+    key = { [schema.pkField]: found[schema.pkField] };
+    if (schema.skField) key[schema.skField] = found[schema.skField];
+  }
 
   const isUserModel =
     ctx.config.enableEmailUniqueness &&

@@ -61,6 +61,9 @@ export async function resolveItemByPlan(
     );
   }
 
+  // TTL-backed expiry sweep — nothing exists for this caller to resolve.
+  if (plan.ttlPrune) return null;
+
   const isQuery = plan.tier === 2 && plan.operation === "query";
   const maxScanItems = config.maxScanItems ?? DEFAULT_MAX_SCAN_ITEMS;
 

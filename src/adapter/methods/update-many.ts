@@ -25,6 +25,7 @@ import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { findAllItems } from "../../helpers/find-items";
 import { buildUpdateExpression } from "../../helpers/update-item";
+import { withTtlAttribute } from "../../helpers/ttl";
 import { BATCH_WRITE_SIZE, MAX_RETRY_ATTEMPTS, RETRY_BACKOFF_BASE_MS, RETRY_JITTER_MS } from "../../helpers/constants";
 import { shouldLog } from "../../helpers/debug-log";
 import { getLogger } from "../../helpers/logger";
@@ -53,6 +54,10 @@ export function updateManyMethod(
 
     if (Object.keys(updateData).length === 0) return 0;
 
+    // Recompute the numeric TTL attribute when this update rewrites the
+    // model's declared expiry field (e.g. sliding session refresh).
+    const updateWithTtl = withTtlAttribute(config, model, updateData);
+
     // ── Find matching items via shared helper ──────────────────
     const items = await findAllItems(docClient, tableName, where, model, schema, config, {
       debugKey: "updateMany",
@@ -73,7 +78,7 @@ export function updateManyMethod(
 
     // ── unsafeBatchUpdate path ─────────────────────────────────
     if (config.unsafeBatchUpdate) {
-      return _batchPutUpdate(docClient, tableName, items, updateData, config);
+      return _batchPutUpdate(docClient, tableName, items, updateWithTtl, config);
     }
 
     // ── Standard path: parallel UpdateItem ─────────────────────
@@ -81,7 +86,7 @@ export function updateManyMethod(
     const { results, errors } = await _parallelLimit(
       items,
       concurrency,
-      (item) => _updateOne(docClient, tableName, item, updateData, schema),
+      (item) => _updateOne(docClient, tableName, item, updateWithTtl, schema),
     );
 
     if (errors.length > 0) {

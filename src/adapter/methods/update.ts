@@ -23,6 +23,7 @@ import { getKeySchema } from "../../helpers/key-builder";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan, matchesClientFilters } from "../../helpers/resolve-item";
 import { buildUpdateExpression } from "../../helpers/update-item";
+import { withTtlAttribute } from "../../helpers/ttl";
 import { getTableName } from "../client";
 import { DynamoAdapterError } from "../../errors";
 
@@ -42,8 +43,9 @@ export function updateMethod(
     // ── Resolve plan via centralized planner ───────────────────
     const plan = resolveQueryPlan(where, model, config);
 
-    // Vacuously-false where clause (e.g. `in: []`) — nothing can match.
-    if (plan.alwaysFalse) return null;
+    // Vacuously-false where clause (e.g. `in: []`) or a TTL-backed expiry
+    // sweep — nothing can match.
+    if (plan.alwaysFalse || plan.ttlPrune) return null;
 
     // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
@@ -81,8 +83,11 @@ export function updateMethod(
 
     // ── Build UpdateExpression via shared helper ───────────────
     // Strips PK/SK fields, converts Date → ISO, returns #nX/:vN placeholders.
+    // A sliding-window refresh rewrites `expiresAt`, so recompute the numeric
+    // TTL attribute from the new value in the same SET (the old TTL would
+    // otherwise delete the row early).
     const { setClauses, attrNames, attrValues } = buildUpdateExpression(
-      update,
+      withTtlAttribute(config, model, update),
       schema.pkField,
       schema.skField,
     );

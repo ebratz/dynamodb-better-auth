@@ -33,6 +33,10 @@ export const auth = betterAuth({
         identifier: { indexName: "identifier-index", hashKey: "identifier" },
       },
     },
+    ttlFields: {
+      session: "expiresAt",
+      verification: "expiresAt",
+    },
     debugLogs: true,
   }),
   emailAndPassword: {

@@ -51,8 +51,9 @@ export async function findAllItems(
 
   const plan = resolveQueryPlan(where, model, config);
 
-  // Vacuously-false where clause (e.g. `in: []`) — nothing can match.
-  if (plan.alwaysFalse) return [];
+  // Vacuously-false where clause (e.g. `in: []`) or a TTL-backed expiry
+  // sweep — nothing can match.
+  if (plan.alwaysFalse || plan.ttlPrune) return [];
 
   // ── Tier 1: GetItem ─────────────────────────────────────────
   if (plan.operation === "getItem") {

@@ -60,6 +60,29 @@ export interface DynamoDBAdapterConfig {
   keySchemas?: Record<string, KeySchemaOverride>;
 
   /**
+   * Declares, per model, the expiry field whose value drives a store-level
+   * DynamoDB TTL. Keyed by default model name (e.g. `{ verification: "expiresAt" }`).
+   *
+   * When set for a model, the adapter:
+   *   1. writes a numeric TTL attribute (epoch seconds + grace) on create/update
+   *      whenever the source field is present, and
+   *   2. answers Better Auth's keyless expiry sweep
+   *      (`deleteMany(<field> lt <now>)`) with an empty result instead of
+   *      scanning the table — DynamoDB TTL performs the actual cleanup.
+   *
+   * Only declare a field here if DynamoDB TTL is enabled on `ttlAttribute`
+   * (see README). Without the store-level TTL, skipped rows never expire.
+   */
+  ttlFields?: Record<string, string>;
+
+  /**
+   * Name of the DynamoDB TTL attribute written by the adapter.
+   * Must be a Number attribute with DynamoDB TTL enabled.
+   * Default: "ttl".
+   */
+  ttlAttribute?: string;
+
+  /**
    * Emit a debugLogs warning when count() scans more than N items.
    * Default: 10_000. Set to 0 to disable.
    */
@@ -284,6 +307,13 @@ export interface QueryPlan {
    * before limit accounting.
    */
   postFilters?: Array<{ field: string; operator: string; value: any }>;
+  /**
+   * The where clause is a model's expiry sweep
+   * (`<ttlField> lt|lte <cutoff>` as the sole clause) on a model that
+   * declares `ttlFields`. DynamoDB TTL owns the cleanup, so consumers
+   * short-circuit to an empty result rather than scanning the table.
+   */
+  ttlPrune?: boolean;
 }
 
 export interface ConvertedWhere {

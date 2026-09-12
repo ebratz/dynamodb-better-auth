@@ -58,8 +58,9 @@ export function findManyMethod(
 
     const plan = resolveQueryPlan(args.where ?? [], model, config);
 
-    // Vacuously-false where clause (e.g. `in: []`) — nothing can match.
-    if (plan.alwaysFalse) return [];
+    // Vacuously-false where clause (e.g. `in: []`) or a TTL-backed expiry
+    // sweep — nothing to return.
+    if (plan.alwaysFalse || plan.ttlPrune) return [];
 
     // ── Tier 1: GetItem on PK ───────────────────────────────
     if (plan.operation === "getItem") {

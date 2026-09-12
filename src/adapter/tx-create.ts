@@ -12,6 +12,7 @@ import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { toDefaultModelName } from "../helpers/model-name";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
+import { withTtlAttribute } from "../helpers/ttl";
 import type { TransactionContext } from "./tx-types";
 
 export async function txCreate(
@@ -31,12 +32,16 @@ export async function txCreate(
   // input through `transformInput` so the adapter sees the same
   // shape it would outside a transaction (id generated, defaults
   // applied, fieldName mapping, Date → ISO via customTransformInput).
-  const item = (await helpers.transformInput(
-    unsafeData,
-    defaultModelName,
-    "create",
-    forceAllowId ?? true,
-  )) as Record<string, any>;
+  const item = withTtlAttribute(
+    ctx.config,
+    model,
+    (await helpers.transformInput(
+      unsafeData,
+      defaultModelName,
+      "create",
+      forceAllowId ?? true,
+    )) as Record<string, any>,
+  );
 
   const tableName = ctx.getTable(model);
   const schema = getKeySchema(model, ctx.config);

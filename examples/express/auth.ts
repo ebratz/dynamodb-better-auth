@@ -44,6 +44,10 @@ export const auth = betterAuth({
         },
       },
     },
+    ttlFields: {
+      session: "expiresAt",
+      verification: "expiresAt",
+    },
     debugLogs: true,
   }),
   session: {
