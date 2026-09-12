@@ -105,5 +105,25 @@ export function validateConfig(config: DynamoDBAdapterConfig): string[] {
     }
   }
 
+  // ── TTL declarations ────────────────────────────────────────
+  if (config.ttlFields && Object.keys(config.ttlFields).length > 0) {
+    const attr = config.ttlAttribute ?? "ttl";
+    for (const [model, field] of Object.entries(config.ttlFields)) {
+      if (!field || typeof field !== "string") {
+        warnings.push(
+          `ttlFields for model "${model}" is empty — the expiry sweep will ` +
+            `not be recognised and will fall back to a table Scan.`,
+        );
+      }
+    }
+    warnings.push(
+      `ttlFields is configured: the adapter writes a numeric TTL attribute ` +
+        `"${attr}" (epoch seconds), and answers Better Auth's expiry sweeps ` +
+        `without a Scan. Enable DynamoDB TTL on "${attr}" (Number type) for ` +
+        `every table whose model declares a TTL field, or expired rows will ` +
+        `never be deleted.`,
+    );
+  }
+
   return warnings;
 }

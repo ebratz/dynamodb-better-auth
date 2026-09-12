@@ -753,21 +753,34 @@ describe("transaction", () => {
       });
     });
 
-    it("throws when SK missing in composite key update", async () => {
-      const docClient = makeDocClient(async () => ({}));
-      const nativeAdapter = makeNativeAdapter();
+    it("partial composite key falls back to findOne pre-resolution (v1.0.1)", async () => {
+      // Pre-1.0.1 this threw INVALID_WHERE. The non-PK-where pre-resolution
+      // path now treats a partial key like any other planner-resolvable
+      // where: findOne locates the row and the buffered Update is keyed from
+      // the item; a missing row returns null and buffers nothing.
+      const send = vi.fn().mockResolvedValue({});
+      const docClient = makeDocClient(send);
+      const nativeAdapter = makeNativeAdapter({
+        findOne: vi.fn().mockResolvedValue({
+          providerId: "google",
+          accountId: "12345",
+          accessToken: "old",
+        }),
+      });
       const config = makeConfig(docClient);
       const tx = createTransactionWrapper(nativeAdapter, config, getTable);
 
-      await expect(
-        tx(async (txAdapter) => {
-          await txAdapter.update({
-            model: "account",
-            where: [{ field: "providerId", operator: "eq", value: "google" }],
-            update: { accessToken: "new" },
-          });
-        }),
-      ).rejects.toThrow(/requires SK field/);
+      await tx(async (txAdapter) => {
+        const updated = await txAdapter.update({
+          model: "account",
+          where: [{ field: "providerId", operator: "eq", value: "google" }],
+          update: { accessToken: "new" },
+        });
+        expect(updated).toMatchObject({ accessToken: "new" });
+      });
+      const sent = send.mock.calls.at(-1)?.[0];
+      const item = sent.TransactItems.find((i: any) => i.Update);
+      expect(item.Update.Key).toEqual({ providerId: "google", accountId: "12345" });
     });
   });
 

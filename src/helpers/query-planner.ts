@@ -89,6 +89,37 @@ export function resolveFilter(
  * Strategy chain: try Tier 1, then Tier 2, then fallback to Tier 3.
  * Each tier returns a complete QueryPlan or null (Tier 3 always succeeds).
  */
+/**
+ * Recognises Better Auth's keyless expiry sweep: `<ttlField> lt|lte <cutoff>`
+ * as the **only** clause, on a model that declares that field as its TTL field.
+ *
+ * Ports `ttlPruneWhere` from the app.ebratz adapter fix (§6.3). The shape is
+ * deliberately exact (§5.2) so it cannot swallow a real query:
+ *   1. the model declares a TTL field,
+ *   2. the where clause has exactly one clause,
+ *   3. that clause is AND-connected, on that exact field, with `lt` or `lte`.
+ *
+ * Every liveness read uses `gt`/`gte` and carries a key clause beside it, so
+ * it cannot collide with this. A range on another field, or a model with no
+ * declared TTL field, stays a normal plan (query/scan).
+ */
+export function ttlPruneWhere(
+  where: readonly WhereEntry[] | undefined,
+  ttlField: string | undefined,
+): boolean {
+  if (ttlField === undefined || where === undefined || where.length !== 1) {
+    return false;
+  }
+  const clause = where[0];
+  if (!clause) return false;
+  const operator = (clause.operator ?? "eq").toLowerCase();
+  return (
+    clause.connector !== "OR" &&
+    clause.field === ttlField &&
+    (operator === "lt" || operator === "lte")
+  );
+}
+
 export function resolveQueryPlan(
   where: WhereEntry[],
   model: string,
@@ -103,6 +134,19 @@ export function resolveQueryPlan(
       "UNKNOWN_MODEL",
       `[UNKNOWN_MODEL] No table configured for model "${model}".`,
     );
+  }
+
+  // Expiry sweep on a TTL-backed model — DynamoDB TTL owns the cleanup.
+  // Answered without a DynamoDB call; consumers short-circuit to empty.
+  if (ttlPruneWhere(where, config.ttlFields?.[defaultModel])) {
+    return {
+      tier: 3,
+      operation: "scan",
+      tableName,
+      ttlPrune: true,
+      expressionAttributeNames: {},
+      expressionAttributeValues: {},
+    };
   }
 
   const schema = getKeySchema(model, config);

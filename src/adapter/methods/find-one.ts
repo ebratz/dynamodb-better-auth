@@ -29,8 +29,9 @@ export function findOneMethod(
 
     const plan = resolveQueryPlan(args.where, args.model, config);
 
-    // Vacuously-false where clause (e.g. `in: []`) — nothing can match.
-    if (plan.alwaysFalse) return null;
+    // Vacuously-false where clause (e.g. `in: []`) or a TTL-backed expiry
+    // sweep — nothing can match.
+    if (plan.alwaysFalse || plan.ttlPrune) return null;
 
     // ── Tier 1: GetItem ──────────────────────────────────────
     if (plan.operation === "getItem") {

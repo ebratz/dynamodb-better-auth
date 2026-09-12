@@ -40,8 +40,9 @@ export function consumeOneMethod(
     // ── Resolve plan via centralized planner ──────────────────
     const plan = resolveQueryPlan(where, model, config);
 
-    // Vacuously-false where clause (e.g. `in: []`) — nothing to consume.
-    if (plan.alwaysFalse) return null;
+    // Vacuously-false where clause (e.g. `in: []`) or a TTL-backed expiry
+    // sweep — nothing to consume.
+    if (plan.alwaysFalse || plan.ttlPrune) return null;
 
     let key: Record<string, any>;
     let conditionFilters = plan.clientSideFilters;

@@ -20,10 +20,11 @@
 
 import { getKeySchema } from "../helpers/key-builder";
 import { buildUpdateExpression, sanitizeForWrite } from "../helpers/update-item";
+import { withTtlAttribute } from "../helpers/ttl";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { toDefaultModelName } from "../helpers/model-name";
 import { buildEmailUniquenessActions } from "../email-uniqueness";
-import { buildTxKey } from "./tx-key-builder";
+import { tryBuildTxKey } from "./tx-key-builder";
 import type { TransactionContext } from "./tx-types";
 import type { WhereClause } from "../types";
 
@@ -51,16 +52,31 @@ export async function txUpdate(
   // Run the patch through transformInput so onUpdate fields
   // (e.g. `updatedAt`), field-name mapping, and Date → ISO
   // conversion happen exactly like the non-tx update path.
-  const update = (await helpers.transformInput(
-    unsafeUpdate,
-    defaultModelName,
-    "update",
-  )) as Record<string, any>;
+  const update = withTtlAttribute(
+    ctx.config,
+    model,
+    (await helpers.transformInput(
+      unsafeUpdate,
+      defaultModelName,
+      "update",
+    )) as Record<string, any>,
+  );
 
   const tableName = ctx.getTable(model);
   const schema = getKeySchema(model, ctx.config);
 
-  const key = buildTxKey(where, schema, model);
+  // Non-PK where (e.g. oauth-provider updating oauthClient by clientId +
+  // clientDiscoveryId inside a transaction): pre-resolve the row through the
+  // planner and take the key from the item. Missing row keeps the update
+  // contract — return null, buffer nothing.
+  let resolvedPreState: Record<string, any> | null | undefined;
+  let key = tryBuildTxKey(where, schema);
+  if (!key) {
+    resolvedPreState = await ctx.nativeAdapter.findOne({ model: mappedModel, where });
+    if (!resolvedPreState) return null;
+    key = { [schema.pkField]: resolvedPreState[schema.pkField] };
+    if (schema.skField) key[schema.skField] = resolvedPreState[schema.skField];
+  }
 
   // ── Read-your-writes: patch a buffered Put from this same tx ──
   const bufferedPut = ctx.writeBuffer.find(
@@ -78,7 +94,9 @@ export async function txUpdate(
   }
 
   // Eagerly read pre-state for honest return value
-  const preState = await ctx.nativeAdapter.findOne({ model: mappedModel, where });
+  const preState =
+    resolvedPreState ??
+    (await ctx.nativeAdapter.findOne({ model: mappedModel, where }));
 
   // Contract: update on a missing record returns null. Buffering the
   // conditional Update anyway would fail the WHOLE transaction at commit.

@@ -657,3 +657,109 @@ describe("tx-methods", () => {
     });
   });
 });
+
+// ── Non-PK where in transactions (v1.0.1) ────────────────────────────────
+// Better Auth's oauth-provider updates `oauthClient` inside a transaction
+// keyed by clientId + clientDiscoveryId (never the adapter PK). The tx
+// handlers pre-resolve the row via findOne and key the buffered action from
+// the item; a missing row is a contract-conformant no-op.
+describe("transaction non-PK where pre-resolution", () => {
+  const oauthTables = {
+    user: "test-users",
+    session: "test-sessions",
+    account: "test-accounts",
+    verification: "test-verifications",
+    oauthClient: "test-oauth-clients",
+  } as any;
+
+  it("update: resolves the key via findOne and buffers Update on the item PK", async () => {
+    const ctx = makeCtx({
+      config: { tables: oauthTables },
+      findOneResult: {
+        id: "row-1",
+        clientId: "https://claude.ai/x",
+        clientDiscoveryId: "cimd",
+        name: "old",
+      },
+    });
+    const result = await txUpdate(ctx, {
+      model: "oauthClient",
+      where: [
+        { field: "clientId", value: "https://claude.ai/x" },
+        { field: "clientDiscoveryId", value: "cimd" },
+      ],
+      update: { name: "new" },
+    });
+    expect(ctx.nativeAdapter.findOne).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ id: "row-1", name: "new" });
+    expect(ctx.writeBuffer).toHaveLength(1);
+    expect(ctx.writeBuffer[0].Update.Key).toEqual({ id: "row-1" });
+    expect(ctx.writeBuffer[0].Update.TableName).toBe("test-oauthClients");
+  });
+
+  it("update: missing row returns null and buffers nothing", async () => {
+    const ctx = makeCtx({ config: { tables: oauthTables }, findOneResult: null });
+    const result = await txUpdate(ctx, {
+      model: "oauthClient",
+      where: [{ field: "clientId", value: "https://claude.ai/x" }],
+      update: { name: "new" },
+    });
+    expect(result).toBeNull();
+    expect(ctx.writeBuffer).toHaveLength(0);
+  });
+
+  it("delete: resolves via findOne and keys the Delete from the item", async () => {
+    const ctx = makeCtx({
+      config: { tables: oauthTables },
+      findOneResult: { id: "row-9", clientId: "c" },
+    });
+    await txDelete(ctx, {
+      model: "oauthClient",
+      where: [{ field: "clientId", value: "c" }],
+    });
+    expect(ctx.writeBuffer).toHaveLength(1);
+    expect(ctx.writeBuffer[0].Delete.Key).toEqual({ id: "row-9" });
+  });
+
+  it("delete: missing row is a no-op (nothing buffered)", async () => {
+    const ctx = makeCtx({ config: { tables: oauthTables }, findOneResult: null });
+    await txDelete(ctx, {
+      model: "oauthClient",
+      where: [{ field: "clientId", value: "missing" }],
+    });
+    expect(ctx.writeBuffer).toHaveLength(0);
+  });
+});
+
+// ── deleteMany coalesces with already-buffered targets (v1.0.2) ──────────
+// better-auth core's consumeVerificationValue: consumeOne(id=X) then
+// deleteMany(identifier) resolving X + siblings, in ONE transaction —
+// DynamoDB forbids two actions on the same item, and the claim already
+// guarantees X's removal.
+describe("txDeleteMany coalescing", () => {
+  it("skips rows whose key is already targeted by a buffered action", async () => {
+    const ctx = makeCtx({
+      findManyResult: [
+        { id: "v1", identifier: "code-abc" },
+        { id: "v2", identifier: "code-abc" },
+      ],
+      writeBuffer: [
+        {
+          Delete: {
+            TableName: "test-verifications",
+            Key: { id: "v1" },
+            ConditionExpression: "attribute_exists(#pk)",
+          },
+        },
+      ],
+    });
+    const count = await txDeleteMany(ctx, {
+      model: "verification",
+      where: [{ field: "identifier", value: "code-abc" }],
+    });
+    expect(count).toBe(2);
+    expect(ctx.writeBuffer).toHaveLength(2);
+    const deletes = ctx.writeBuffer.filter((a: any) => a.Delete);
+    expect(deletes.map((a: any) => a.Delete.Key.id).sort()).toEqual(["v1", "v2"]);
+  });
+});

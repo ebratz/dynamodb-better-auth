@@ -21,9 +21,10 @@
 import { ScanCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
-import { resolveFilter } from "../../helpers/query-planner";
+import { resolveFilter, ttlPruneWhere } from "../../helpers/query-planner";
 import { findGsiForField } from "../../helpers/gsi-resolver";
 import { fetchAllByPlan } from "../../helpers/fetch-all";
+import { toDefaultModelName } from "../../helpers/model-name";
 import { getTableName } from "../client";
 import { shouldLog } from "../../helpers/debug-log";
 import { getLogger } from "../../helpers/logger";
@@ -40,6 +41,12 @@ export function countMethod(
     const tableName = getTableName(model, config);
     const threshold = config.warnOnLargeCount ?? 10_000;
     const where = args.where ?? [];
+
+    // TTL-backed expiry sweep — DynamoDB TTL owns the cleanup, so the count
+    // is zero without touching the table (Better Auth's `count` path over
+    // the same shape must agree with `deleteMany`/`findMany`).
+    const defaultModel = toDefaultModelName(config, model);
+    if (ttlPruneWhere(where, config.ttlFields?.[defaultModel])) return 0;
 
     const hasOrConnector = where.some((w, i) => i > 0 && w.connector === "OR");
 

@@ -252,7 +252,8 @@ users.addGlobalSecondaryIndex({
 | `token` | String | **PK** |
 | `id` | String | GSI `by-id` PK (optional, for admin plugin) |
 | `userId` | String | GSI `userId-index` PK |
-| `expiresAt` | String (ISO) | TTL |
+| `expiresAt` | String (ISO) | |
+| `ttl` | Number (epoch seconds) | Optional TTL — written when `ttlFields.session` is set. See [Enable DynamoDB TTL](#enable-dynamodb-ttl). |
 | `ipAddress` | String | |
 | `userAgent` | String | |
 | `createdAt` | String (ISO) | |
@@ -297,7 +298,7 @@ SessionsTable:
         Projection:
           ProjectionType: KEYS_ONLY
     TimeToLiveSpecification:
-      AttributeName: expiresAt
+      AttributeName: ttl
       Enabled: true
 ```
 </details>
@@ -419,7 +420,8 @@ accounts.addGlobalSecondaryIndex({
 | `id` | String | **PK** |
 | `identifier` | String | GSI `identifier-index` PK |
 | `value` | String | |
-| `expiresAt` | String (ISO) | TTL |
+| `expiresAt` | String (ISO) | |
+| `ttl` | Number (epoch seconds) | Optional TTL — written when `ttlFields.verification` is set. See [Enable DynamoDB TTL](#enable-dynamodb-ttl). |
 | `createdAt` | String (ISO) | |
 | `updatedAt` | String (ISO) | |
 
@@ -448,7 +450,7 @@ VerificationsTable:
         Projection:
           ProjectionType: ALL
     TimeToLiveSpecification:
-      AttributeName: expiresAt
+      AttributeName: ttl
       Enabled: true
 ```
 </details>
@@ -637,6 +639,8 @@ try {
 | `tables.emailLookups` | `string` | — | Required when `enableEmailUniqueness: true` |
 | `indexes` | `Record<string, Record<string, GsiDeclaration>>` | `{}` | GSI declarations — controls Tier-2 vs Tier-3 routing |
 | `keySchemas` | `Record<string, KeySchemaOverride>` | `{}` | Override default PK/SK per model (plugin models default to `id`; built-in `rateLimit` defaults to `key` — create its table with PK `key` when using `rateLimit.storage: "database"`) |
+| `ttlFields` | `Record<string, string>` | `{}` | Per-model expiry field that drives a store-level DynamoDB TTL (e.g. `{ session: "expiresAt", verification: "expiresAt" }`). Enables the numeric `ttl` attribute on writes and answers Better Auth's keyless expiry sweep without a Scan |
+| `ttlAttribute` | `string` | `"ttl"` | Name of the numeric TTL attribute written when `ttlFields` is set. Enable DynamoDB TTL on this attribute (Number type) |
 | `enableEmailUniqueness` | `boolean` | `false` | Atomic email-claim enforcement via sidecar table |
 | `warnOnLargeCount` | `number` | `10000` | Emit `debugLogs` warning when `count()` scans more than this many items |
 | `unsafeBatchUpdate` | `boolean` | `false` | Use `BatchWriteItem`+`PutItem` in `updateMany` (faster, full-item LWW) |
@@ -981,7 +985,47 @@ Tighten further by removing `Scan` once GSIs cover every access pattern (the ada
 
 ### Enable DynamoDB TTL
 
-Configure TTL on `sessions.expiresAt` and `verifications.expiresAt` to auto-clean expired data (free, async, typically within 48 hours). This is a **backup** mechanism — the adapter always checks `expiresAt` explicitly; never rely on TTL for correctness.
+Better Auth garbage-collects expired rows with a keyless range delete
+(`deleteMany({ expiresAt: { lt: now } })`). A key-value store cannot serve that
+from a key, so the adapter would otherwise fall back to a full-table `Scan`.
+Declare each model's expiry field in `ttlFields` and the adapter:
+
+1. writes a numeric **`ttl`** attribute (epoch seconds + 7-day grace) on every
+   create/update that carries that field, and
+2. recognises the sweep in the query planner and answers it **without a
+   DynamoDB call** — DynamoDB TTL performs the actual deletion.
+
+```ts
+dynamodbAdapter({
+  client,
+  tables: { /* … */ },
+  ttlFields: {
+    session: "expiresAt",
+    verification: "expiresAt",
+  },
+});
+```
+
+Then enable TTL on that numeric attribute in DynamoDB:
+
+```yaml
+TimeToLiveSpecification:
+  AttributeName: ttl
+  Enabled: true
+```
+
+TTL deletion is free, async, and typically happens within 48 hours. The grace
+period guarantees DynamoDB deletes **later** than the sweep's cutoff, never
+ever — rows the sweep would have kept are never removed early. Better Auth
+still re-checks `expiresAt` on every read, so correctness never depends on TTL
+having fired.
+
+> **Do not enable DynamoDB TTL on `expiresAt` directly.** The adapter stores
+> dates as ISO-8601 strings, and DynamoDB TTL only deletes on a **Number**
+> attribute. TTL on a string attribute is silently ignored.
+
+Leave `ttlFields` unset for a model and the expiry sweep keeps its previous
+behaviour (a filtered `Scan`), which stays correct but costs RCU.
 
 ### Use on-demand capacity mode
 

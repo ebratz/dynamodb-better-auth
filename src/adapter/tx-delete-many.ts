@@ -58,15 +58,38 @@ export async function txDeleteMany(
     );
   }
 
+  // Coalesce with actions already buffered in this transaction: better-auth
+  // core's verification consumption runs consumeOne(id) and then
+  // deleteMany(identifier) in ONE transaction, and the sweep resolves the
+  // very row consumeOne already claimed. DynamoDB forbids two actions on the
+  // same item per TransactWriteItems, and the buffered action already
+  // guarantees that row's removal — skipping it preserves the caller's
+  // intent exactly.
+  const alreadyTargeted = (key: Record<string, any>) =>
+    ctx.writeBuffer.some((action: any) => {
+      const op = action.Delete ?? action.Put ?? action.Update ?? action.ConditionCheck;
+      if (!op || op.TableName !== tableName) return false;
+      const target = op.Key ?? op.Item;
+      return (
+        target !== undefined &&
+        Object.entries(key).every(([k, v]) => target[k] === v)
+      );
+    });
+
+  const keys = items
+    .map((item) => {
+      const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
+      if (schema.skField && item[schema.skField] !== undefined) {
+        key[schema.skField] = item[schema.skField];
+      }
+      return key;
+    })
+    .filter((key) => !alreadyTargeted(key));
+
   // Block >100 actions
-  assertTransactionCapacity(ctx.writeBuffer, items.length);
+  assertTransactionCapacity(ctx.writeBuffer, keys.length);
 
-  for (const item of items) {
-    const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
-    if (schema.skField && item[schema.skField] !== undefined) {
-      key[schema.skField] = item[schema.skField];
-    }
-
+  for (const key of keys) {
     ctx.writeBuffer.push({
       Delete: {
         TableName: tableName,

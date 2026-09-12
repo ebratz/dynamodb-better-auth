@@ -33,8 +33,9 @@ export function deleteMethod(
     // ── Resolve plan via centralized planner ───────────────────
     const plan = resolveQueryPlan(where, model, config);
 
-    // Vacuously-false where clause (e.g. `in: []`) — nothing to delete.
-    if (plan.alwaysFalse) return;
+    // Vacuously-false where clause (e.g. `in: []`) or a TTL-backed expiry
+    // sweep — nothing to delete.
+    if (plan.alwaysFalse || plan.ttlPrune) return;
 
     // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
