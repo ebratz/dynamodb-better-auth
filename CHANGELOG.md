@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0](https://github.com/ebratz/dynamodb-better-auth/compare/v1.1.0...v2.0.0) (2026-09-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **adapter:** repair DynamoDB atomic operations and upgrade Better Auth
+
+### Bug Fixes
+
+* **adapter:** repair DynamoDB atomic operations and upgrade Better Auth ([ef5317a](https://github.com/ebratz/dynamodb-better-auth/commit/ef5317aa46109b056b0f29d7499b2d1d431420a1))
+
 ## [1.1.0](https://github.com/ebratz/dynamodb-better-auth/compare/v1.0.0...v1.1.0) (2026-09-12)
 
 
