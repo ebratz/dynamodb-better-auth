@@ -18,6 +18,8 @@
  * buildEmailUniquenessActions.
  */
 
+import { writeCondition, snapshotWhere } from "../helpers/write-condition";
+import { matchesClientFilters } from "../helpers/resolve-item";
 import { getKeySchema } from "../helpers/key-builder";
 import { buildUpdateExpression, sanitizeForWrite } from "../helpers/update-item";
 import { withTtlAttribute } from "../helpers/ttl";
@@ -64,6 +66,9 @@ export async function txUpdate(
 
   const tableName = ctx.getTable(model);
   const schema = getKeySchema(model, ctx.config);
+  // Return values must reflect only assignments accepted by DynamoDB.
+  delete update[schema.pkField];
+  if (schema.skField) delete update[schema.skField];
 
   // Non-PK where (e.g. oauth-provider updating oauthClient by clientId +
   // clientDiscoveryId inside a transaction): pre-resolve the row through the
@@ -86,6 +91,12 @@ export async function txUpdate(
       Object.entries(key).every(([k, v]) => a.Put.Item?.[k] === v),
   );
   if (bufferedPut) {
+    if (!matchesClientFilters(bufferedPut.Put.Item, where.map(w => ({ field: w.field, operator: w.operator ?? "eq", value: w.value })))) return null;
+    if (ctx.config.enableEmailUniqueness && defaultModelName === "user" && update.email !== undefined) {
+      const oldEmail = String(bufferedPut.Put.Item.email).toLowerCase();
+      const claim = ctx.writeBuffer.find(action => action.Put?.TableName === ctx.config.tables.emailLookups && action.Put.Item.email === oldEmail && action.Put.Item.userId === bufferedPut.Put.Item.id);
+      if (claim) claim.Put.Item.email = String(update.email).toLowerCase();
+    }
     Object.assign(bufferedPut.Put.Item, sanitizeForWrite(update));
     return helpers.transformOutput(
       { ...bufferedPut.Put.Item },
@@ -101,6 +112,8 @@ export async function txUpdate(
   // Contract: update on a missing record returns null. Buffering the
   // conditional Update anyway would fail the WHOLE transaction at commit.
   if (!preState) return null;
+
+  const condition = writeCondition(snapshotWhere(preState), schema.pkField, preState);
 
   // Handle email change with uniqueness
   if (
@@ -143,16 +156,16 @@ export async function txUpdate(
         TableName: tableName,
         Key: key,
         UpdateExpression: `SET ${setClauses.join(", ")}`,
-        ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
-        ExpressionAttributeValues: attrValues,
-        ConditionExpression: "attribute_exists(#pk)",
+        ...condition,
+        ExpressionAttributeNames: { ...attrNames, ...condition.ExpressionAttributeNames },
+        ExpressionAttributeValues: { ...attrValues, ...condition.ExpressionAttributeValues },
       },
     });
     for (const action of emailActions) {
       ctx.writeBuffer.push(action);
     }
 
-    return { ...preState, ...update };
+    return helpers.transformOutput({ ...preState, ...update }, defaultModelName);
   }
 
   // Standard update
@@ -164,16 +177,17 @@ export async function txUpdate(
     schema.skField,
   );
 
+  if (!setClauses.length) return helpers.transformOutput(preState, defaultModelName);
   ctx.writeBuffer.push({
     Update: {
       TableName: tableName,
       Key: key,
       UpdateExpression: `SET ${setClauses.join(", ")}`,
-      ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
-      ExpressionAttributeValues: attrValues,
-      ConditionExpression: "attribute_exists(#pk)",
+      ...condition,
+      ExpressionAttributeNames: { ...attrNames, ...condition.ExpressionAttributeNames },
+      ExpressionAttributeValues: { ...attrValues, ...condition.ExpressionAttributeValues },
     },
   });
 
-  return { ...preState, ...update };
+  return helpers.transformOutput({ ...preState, ...update }, defaultModelName);
 }

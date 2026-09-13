@@ -17,30 +17,31 @@ import { makeConfig } from "./helpers";
 // ── Minimal SDK mock — each test overrides send behavior ────────
 
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  PutCommand: vi.fn().mockImplementation((input: any) => ({
+  DeleteCommand: vi.fn(function(input: Record<string, unknown>) { return { ...input, _type: "DeleteCommand" }; }),
+  PutCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "PutCommand",
-  })),
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  UpdateCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "UpdateCommand",
-  })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "GetCommand",
-  })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "QueryCommand",
-  })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "ScanCommand",
-  })),
-  BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  BatchWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "BatchWriteCommand",
-  })),
+  }; }),
 }));
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -170,7 +171,7 @@ describe("error propagation", () => {
 
   // ── deleteMany ───────────────────────────────────────────────
   describe("deleteMany", () => {
-    it("propagates fatal BatchWrite errors", async () => {
+    it("propagates conditional Delete service errors", async () => {
       const docClient = makeDocClientWithResponses([
         // Scan returns items (Tier 3)
         {
@@ -194,20 +195,10 @@ describe("error propagation", () => {
       ).rejects.toThrow("An internal error occurred");
     });
 
-    it("retries UnprocessedItems but propagates errors on retry", async () => {
+    it("propagates throttling from conditional Delete", async () => {
       const userItem = { id: "u1", name: "Alice" };
       const docClient = makeDocClientWithResponses([
-        // GetItem returns the item (Tier 1: PK equality)
         { Item: userItem },
-        // First BatchWrite: 1 unprocessed
-        {
-          UnprocessedItems: {
-            "test-users": [
-              { DeleteRequest: { Key: { id: "u1" } } },
-            ],
-          },
-        },
-        // Retry BatchWrite throws
         makeError("ThrottlingException", "Rate exceeded on retry"),
       ]);
 

@@ -80,6 +80,8 @@ npm install @ebratz/dynamodb-better-auth \
 
 Or with `pnpm` / `yarn` / `bun` — peer deps are explicit so the package manager will flag any missing ones.
 
+Requires Node.js **20.19.0 or newer**. Tested dependency baseline: Better Auth **1.7.4**, AWS DynamoDB client and DocumentClient **3.1131.0**, and DynamoDB utilities **3.996.9**.
+
 ### Peer dependencies
 
 | Package | Why it's required |
@@ -173,7 +175,7 @@ The planner explicitly **never silently produces wrong results.** Unsupported op
 `TransactWriteItems` is write-only — DynamoDB doesn't support read-modify-write inside a transaction. The adapter implements a **buffer-then-flush** pattern:
 
 1. Inside `transaction(async (tx) => { ... })`, calls to `tx.create`, `tx.update`, `tx.delete`, `tx.deleteMany`, `tx.consumeOne` are buffered as `TransactWriteItem` actions.
-2. `tx.findOne`, `tx.findMany`, `tx.count` pass through to the database (non-transactional reads).
+2. `tx.findOne`, `tx.findMany`, `tx.count` overlay buffered writes on database reads. Reads of a table with pending writes may scan that table, bounded by `maxScanItems`.
 3. `update` and `consumeOne` eagerly read pre-state via `GetItem` so the returned value reflects the merged result honestly.
 4. At callback exit, all buffered actions flush in a single `TransactWriteItems` request with a `ClientRequestToken` for idempotency.
 5. If the callback throws, the buffer is discarded — no writes are committed.
@@ -524,7 +526,7 @@ When enabled, user `create` wraps in a `TransactWriteItems` containing:
 
 `EmailLookups` is a base table with `PK = email`, so `ConsistentRead: true` is supported — unlike a GSI. The conditional Put guards against concurrent claims. If either action fails (id collision or email collision), the entire transaction rolls back.
 
-User deletion and email change are handled symmetrically: delete releases the email claim; update transactionally swaps old email-lookup → new email-lookup.
+User deletion and email change are handled symmetrically: delete releases the owned email claim; update transactionally swaps old email-lookup → new email-lookup. Re-saving the same normalized email preserves its claim. Bulk email changes are rejected when uniqueness is enabled; update users individually.
 
 > **Plan ahead:** If you anticipate adding email-based flows later (magic links, password reset, email change), deploy the lookup table from day one. Retrofitting after users exist requires a backfill that races with new sign-ups.
 
@@ -541,8 +543,8 @@ import { dynamodbAdapter } from "@ebratz/dynamodb-better-auth";
 // internally for operations like createOAuthUser. You can also call it manually:
 
 await auth.options.database.transaction(async (tx) => {
-  // Primary-key fields must be supplied — transaction is a lower-level
-  // primitive than the factory-wrapped methods (no auto id generation).
+  // Application-defined primary-key fields must be supplied;
+  // Better Auth still generates the logical id and applies defaults.
   const user = await tx.create({
     model: "user",
     data: {
@@ -574,7 +576,9 @@ await auth.options.database.transaction(async (tx) => {
 ### Transaction limits and behavior
 
 - **Up to 100 actions** per transaction (DynamoDB limit). Auth transactions are typically 2–5 actions.
-- **Reads inside the callback are not transactional.** `tx.findOne` / `tx.findMany` see the pre-transaction state.
+- **Reads see buffered writes**, but do not provide snapshot isolation from concurrent database changes. A table with pending writes may require a bounded scan before filtering, sorting, and pagination.
+- **Repeated writes to the same item are restricted.** Create-then-update and update-then-bulk-delete are coalesced; other duplicate targets are rejected. Write handlers still resolve database pre-state, so avoid multi-step mutations that depend on a previous buffered mutation.
+- **Atomic counters:** `incrementOne` uses guarded optimistic updates with up to five attempts. Sustained contention throws `TRANSACTION_CONFLICT`; transaction counters commit with the rest of the write buffer.
 - **`update` and `consumeOne` eagerly read** the pre-state at buffer time so their return value is honest.
 - **Idempotency:** each flush carries a `ClientRequestToken` (UUID) so retried requests within 10 minutes are deduplicated by DynamoDB.
 
@@ -1097,6 +1101,10 @@ All DynamoDB GSIs are eventually consistent (typically <1s but unbounded). After
 
 When a Scan (Tier 3) is combined with `sortBy`, the adapter must fetch **all** matching items, sort client-side, then slice to `limit` — DynamoDB's native `Limit` would otherwise return the wrong N items. Without `sortBy`, the native `Limit` is applied during the Scan. **Adding the appropriate GSI avoids Tier 3 entirely.**
 
+`deleteMany` uses conditional per-item deletes and counts only rows actually deleted. Each write rechecks its predicates. A failed operation can leave partial progress; use `transaction()` when the entire operation must commit together. An empty `where` means all rows, subject to configured limits.
+
+TTL cleanup deferral applies only to `deleteMany` expiry sweeps. Reads, counts, updates, and single-record consumption continue to evaluate the original expiry predicate. Clearing a nullable expiry also disables its numeric TTL.
+
 ### `updateMany` is not transactional
 
 Default `updateMany` runs N parallel `UpdateItem` calls — they are not atomic with each other. Partial failure surfaces as an `AggregateError` whose `.errors` lists the per-item failures; successful updates remain committed. Wrap in `transaction()` if all-or-nothing is required.
@@ -1181,7 +1189,7 @@ This is transparent in normal operation. Only matters if you read/write DynamoDB
 | Aggregate size | Unlimited | 4 MB total |
 | Rollback | `ROLLBACK` | Discard buffer on throw |
 
-Auth transactions are typically 2–5 actions, well within the 100-action limit. The main gotcha is that `tx.findOne()` inside a transaction sees the **pre-transaction** state, not intermediate writes.
+Auth transactions are typically 2–5 actions, well within the 100-action limit. Transaction reads overlay pending writes, but they do not provide a database snapshot. Repeated mutations of the same item remain restricted.
 
 ### Migration checklist
 
@@ -1278,7 +1286,7 @@ Higher values saturate the table's capacity faster. On on-demand mode, DynamoDB 
 
 ### `ValidationException: One of the required keys was not given a value`
 
-You're calling `tx.create()` inside `transaction()` without supplying the PK field (e.g., `id` for `user`, `token` for `session`). Transaction is a lower-level primitive than the factory-wrapped methods — it doesn't run Better Auth's id generator. Supply primary-key fields explicitly:
+You're calling `tx.create()` inside `transaction()` without supplying the PK field (e.g., `id` for `user`, `token` for `session`). Transaction creates run Better Auth's id generator and defaults. Application-defined primary keys such as a session token must still be present. Supply those key fields explicitly:
 
 ```ts
 await tx.create({ model: "user", data: { id: crypto.randomUUID(), ... } });

@@ -1,23 +1,17 @@
 /**
- * deleteMany method — per DESIGN.md §5 (deleteMany method) + §10 batching.
- *
- * Deletes all items matching the where clause.
- *
- * 1. Find all matching items via shared findAllItems helper (Tier 1/2/3).
- * 2. Extract keys; chunk into batches of 25 → BatchWriteCommand.
- * 3. Retry UnprocessedItems with exponential backoff + jitter (max 3 attempts).
- * 4. Return total deletedCount.
+ * Discover matching rows, then conditionally delete each one. Recheck the
+ * predicate at the write boundary and count only deleted preimages.
+ * Successful deletes remain committed if a later write fails.
  */
 
-import {
-  BatchWriteCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { deleteItem } from "../../helpers/delete-item";
+import { ttlPruneWhere } from "../../helpers/query-planner";
+import { resolveTtlField } from "../../helpers/ttl";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { getKeySchema } from "../../helpers/key-builder";
 import { getTableName } from "../client";
 import { findAllItems } from "../../helpers/find-items";
-import { BATCH_WRITE_SIZE, MAX_RETRY_ATTEMPTS, RETRY_BACKOFF_BASE_MS, RETRY_JITTER_MS } from "../../helpers/constants";
 import { DynamoAdapterError } from "../../errors";
 
 export function deleteManyMethod(
@@ -30,19 +24,13 @@ export function deleteManyMethod(
   }): Promise<number> => {
     const { model, where } = args;
 
-    // ── Guard against accidental full-table deletion ─────────
-    if (!where || where.length === 0) {
-      throw new DynamoAdapterError(
-        "INVALID_WHERE",
-        "deleteMany requires a non-empty where clause to prevent accidental full-table deletion.",
-      );
-    }
+    if (ttlPruneWhere(where, resolveTtlField(config, model))) return 0;
 
     const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
     // ── Find all matching items via shared helper ──────────────
-    const items = await findAllItems(docClient, tableName, where, model, schema, config, {
+    const items = await findAllItems(docClient, tableName, where ?? [], model, schema, config, {
       debugKey: "deleteMany",
       includeTier1: true,
     });
@@ -70,63 +58,10 @@ export function deleteManyMethod(
       return key;
     });
 
-    // ── Batch delete in chunks of BATCH_WRITE_SIZE (25) ───────
     let deletedCount = 0;
-
-    for (let i = 0; i < keys.length; i += BATCH_WRITE_SIZE) {
-      const chunk = keys.slice(i, i + BATCH_WRITE_SIZE);
-      const deleted = await _batchDeleteWithRetry(docClient, tableName, chunk);
-      deletedCount += deleted;
+    for (const [i, key] of keys.entries()) {
+      if (await deleteItem(docClient, config, model, key, where ?? [], items[i])) deletedCount++;
     }
-
     return deletedCount;
   };
-}
-
-async function _batchDeleteWithRetry(
-  docClient: DynamoDBDocumentClient,
-  tableName: string,
-  keys: Record<string, any>[],
-  attempt = 1,
-): Promise<number> {
-  const result = await docClient.send(
-    new BatchWriteCommand({
-      RequestItems: {
-        [tableName]: keys.map((key) => ({
-          DeleteRequest: { Key: key },
-        })),
-      },
-    }),
-  );
-
-  let deletedCount = keys.length;
-
-  const unprocessed = (result.UnprocessedItems as any)?.[tableName];
-  if (unprocessed && unprocessed.length > 0 && attempt < MAX_RETRY_ATTEMPTS) {
-    const unprocessedKeys = unprocessed.map(
-      (u: any) => u.DeleteRequest!.Key,
-    );
-    // Exponential backoff with jitter
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.pow(2, attempt - 1) * RETRY_BACKOFF_BASE_MS + Math.random() * RETRY_JITTER_MS),
-    );
-    const retryDeleted = await _batchDeleteWithRetry(
-      docClient,
-      tableName,
-      unprocessedKeys,
-      attempt + 1,
-    );
-    deletedCount = deletedCount - unprocessedKeys.length + retryDeleted;
-  } else if (unprocessed && unprocessed.length > 0) {
-    // Max attempts reached — silently returning a shrunken count would
-    // let callers believe every matched row was deleted.
-    throw new DynamoAdapterError(
-      "PARTIAL_FAILURE",
-      `deleteMany: ${unprocessed.length} of ${keys.length} deletes in a batch ` +
-        `remained unprocessed after ${MAX_RETRY_ATTEMPTS} attempts (throttling). ` +
-        `${deletedCount - unprocessed.length} deletes in this batch succeeded.`,
-    );
-  }
-
-  return deletedCount;
 }

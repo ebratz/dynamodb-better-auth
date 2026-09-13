@@ -18,6 +18,8 @@
  * Callers handle Tier 1 with GetCommand + matchesClientFilters.
  */
 
+import { isDeepStrictEqual } from "node:util";
+import { sanitizeValue } from "./update-item";
 import { QueryCommand, ScanCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../types";
@@ -171,11 +173,12 @@ export function matchesClientFilters(
   item: AnyRecord,
   filters: ClientFilter[],
 ): boolean {
-  for (const f of filters) {
-    const itemVal = item[f.field];
+  for (let f of filters) {
+    const itemVal = sanitizeValue(item[f.field]) ?? null;
+    f = { ...f, value: sanitizeValue(f.value) };
     switch (f.operator) {
-      case "eq":          if (itemVal !== f.value) return false; break;
-      case "ne":          if (itemVal === f.value) return false; break;
+      case "eq":          if (!isDeepStrictEqual(itemVal, f.value)) return false; break;
+      case "ne":          if (isDeepStrictEqual(itemVal, f.value)) return false; break;
       case "gt":          if (!(itemVal > f.value)) return false; break;
       case "gte":         if (!(itemVal >= f.value)) return false; break;
       case "lt":          if (!(itemVal < f.value)) return false; break;

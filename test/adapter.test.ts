@@ -15,6 +15,10 @@ import { DynamoDBAdapterConfig } from "../src/types";
 import { dynamodbAdapter } from "../src/adapter/factory";
 import { setupTables } from "./setup";
 import type { BetterAuthOptions } from "better-auth";
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { resolveDocClient } from "../src/adapter/client";
+import { incrementOneMethod } from "../src/adapter/methods/increment-one";
+import { updateManyMethod } from "../src/adapter/methods/update-many";
 
 // ── Config ─────────────────────────────────────────────────────
 
@@ -87,6 +91,53 @@ afterAll(async () => {
 
 const now = () => new Date();
 const later = (ms = 3600000) => new Date(Date.now() + ms);
+
+describe("Audit fixes against DynamoDB", () => {
+  it("allows only one concurrent guarded counter update", async () => {
+    const client = resolveDocClient(adapterConfig.client);
+    await client.send(new PutCommand({ TableName: TABLE_NAMES.user, Item: { id: "audit-cas", count: 0 } }));
+    const update = updateManyMethod(client, { ...adapterConfig, enableEmailUniqueness: false });
+    const results = await Promise.all([1, 2].map(count => update({
+      model: "user", where: [{ field: "id", value: "audit-cas" }, { field: "count", value: 0 }], update: { count },
+    })));
+    expect(results.reduce((sum, count) => sum + count, 0)).toBe(1);
+  });
+
+  it("preserves concurrent increments without lost updates", async () => {
+    const client = resolveDocClient(adapterConfig.client);
+    await client.send(new PutCommand({ TableName: TABLE_NAMES.user, Item: { id: "audit-increment", count: 0 } }));
+    const increment = incrementOneMethod(client, { ...adapterConfig, enableEmailUniqueness: false });
+    await Promise.all([1, 2, 3, 4].map(() => increment({ model: "user", where: [{ field: "id", value: "audit-increment" }], increment: { count: 1 } })));
+    const result = await client.send(new GetCommand({ TableName: TABLE_NAMES.user, Key: { id: "audit-increment" }, ConsistentRead: true }));
+    expect(result.Item?.count).toBe(4);
+  });
+
+  it("reads buffered creates, updates, and deletes with selection and count", async () => {
+    const user = await adapter.create({ model: "user", data: { email: "audit-view@test.com", name: "Before", emailVerified: false, createdAt: now(), updatedAt: now() } });
+    await adapter.transaction(async tx => {
+      await tx.update({ model: "user", where: [{ field: "id", value: user.id }], update: { name: "After" } });
+      expect(await tx.findOne({ model: "user", where: [{ field: "id", value: user.id }] })).toMatchObject({ name: "After" });
+      expect(await tx.findMany({ model: "user", where: [{ field: "id", value: user.id }], select: ["id", "name"] })).toEqual([{ id: user.id, name: "After" }]);
+      expect(await tx.count({ model: "user", where: [{ field: "id", value: user.id }] })).toBe(1);
+    });
+    await adapter.transaction(async tx => {
+      await tx.delete({ model: "user", where: [{ field: "id", value: user.id }] });
+      expect(await tx.findOne({ model: "user", where: [{ field: "id", value: user.id }] })).toBeNull();
+      expect(await tx.count({ model: "user", where: [{ field: "id", value: user.id }] })).toBe(0);
+    });
+  });
+
+  it("returns expired verification dates correctly inside a transaction", async () => {
+    const expiresAt = new Date(Date.now() - 60_000);
+    const token = await adapter.create({ model: "verification", data: { identifier: "audit-expired", value: "secret", expiresAt, createdAt: now(), updatedAt: now() } });
+    await adapter.transaction(async tx => {
+      const consumed = await tx.consumeOne({ model: "verification", where: [{ field: "id", value: token.id }] });
+      expect(consumed?.expiresAt).toEqual(expiresAt);
+      expect(consumed?.expiresAt instanceof Date).toBe(true);
+      expect(consumed!.expiresAt < new Date()).toBe(true);
+    });
+  });
+});
 
 // ── User CRUD ──────────────────────────────────────────────────
 
@@ -596,24 +647,10 @@ describe("Email change atomicity", () => {
     });
     expect(updated!.email).toBe(newEmail);
 
-    // The adapter's update does NOT (yet) swap EmailLookups entries.
-    // Old email-lookup still exists → duplicating oldEmail should fail.
-    await expect(
-      adapter.create({
-        model: "user",
-        data: {
-          email: oldEmail,
-          emailVerified: false,
-          name: "Reclaim Attempt",
-          createdAt: now(),
-          updatedAt: now(),
-        },
-      }),
-    ).rejects.toThrow();
+    // Old email is released; the new email remains exclusively claimed.
+    await expect(adapter.create({ model: "user", data: { email: oldEmail, name: "Reclaimed", emailVerified: false } })).resolves.toMatchObject({ email: oldEmail });
+    await expect(adapter.create({ model: "user", data: { email: newEmail, name: "Collision", emailVerified: false } })).rejects.toMatchObject({ code: "EMAIL_EXISTS" });
 
-    // newEmail was not claimed by update → creating with newEmail succeeds
-    // (this is a known limitation: email-change uniqueness requires a
-    // transaction wrapping update + email-lookup swap)
   });
 });
 

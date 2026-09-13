@@ -29,7 +29,7 @@ export function buildUpdateExpression(
 } {
   // ── Strip key fields ────────────────────────────────────────
   const safeFields = Object.keys(update).filter(
-    (f) => f !== pkField && f !== skField,
+    (f) => f !== pkField && f !== skField && update[f] !== undefined,
   );
 
   const attrNames: Record<string, string> = {};
@@ -60,7 +60,13 @@ export function buildUpdateExpression(
  * ExpressionAttributeValues must be converted.
  */
 export function sanitizeValue(val: unknown): any {
-  return val instanceof Date ? val.toISOString() : val;
+  if (val instanceof Date) return val.toISOString();
+  if (Array.isArray(val)) return val.map(sanitizeValue);
+  if (val instanceof Set) return new Set([...val].map(sanitizeValue));
+  if (val && typeof val === "object" && (Object.getPrototypeOf(val) === Object.prototype || Object.getPrototypeOf(val) === null)) {
+    return Object.fromEntries(Object.entries(val).map(([key, value]) => [key, sanitizeValue(value)]));
+  }
+  return val;
 }
 
 /**

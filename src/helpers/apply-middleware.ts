@@ -27,6 +27,7 @@ export function applyMiddleware(
   extensions: DynamoAdapterMiddleware[],
   operation: string,
   fn: (args: any) => Promise<any>,
+  afterCommit?: (hook: () => Promise<void>) => void,
 ): (args: any) => Promise<any> {
   if (!extensions || extensions.length === 0) return fn;
 
@@ -51,7 +52,7 @@ export function applyMiddleware(
     // Run before hooks sequentially — each may return a partial
     // args object to merge (e.g., { data: enrichedData })
     for (const hook of beforeHooks) {
-      const patch = await hook(args);
+      const patch = await hook(modifiedArgs);
       if (patch && typeof patch === "object") {
         modifiedArgs = { ...modifiedArgs, ...patch };
       }
@@ -62,7 +63,9 @@ export function applyMiddleware(
 
     // Run after hooks with original args (not modified) + result
     for (const hook of afterHooks) {
-      await hook({ ...args, result });
+      const invoke = async () => { await hook({ ...modifiedArgs, result }); };
+      if (afterCommit) afterCommit(invoke);
+      else await invoke();
     }
 
     return result;

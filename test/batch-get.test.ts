@@ -8,10 +8,10 @@ import { resolveKEYS_ONLY } from "../src/helpers/batch-get";
 
 // Mock the SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({
+  BatchGetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "BatchGetCommand",
-  })),
+  }; }),
 }));
 
 describe("resolveKEYS_ONLY", () => {

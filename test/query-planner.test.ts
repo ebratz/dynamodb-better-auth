@@ -327,7 +327,7 @@ describe("resolveQueryPlan", () => {
     expect(plan.filterExpression).toBeUndefined();
   });
 
-  it("Tier 2: unsupported operator on GSI sort key → FilterExpression", () => {
+  it("Tier 2: unsupported operator on GSI sort key → client-side predicate", () => {
     const configWithSortKey = {
       ...baseConfig,
       indexes: {
@@ -352,7 +352,8 @@ describe("resolveQueryPlan", () => {
     );
     expect(plan.tier).toBe(2);
     // contains is not a sort-key operator → goes to FilterExpression
-    expect(plan.filterExpression).toBeTruthy();
+    expect(plan.filterExpression).toBeUndefined();
+    expect(plan.postFilters).toEqual([{ field: "createdAt", operator: "contains", value: "2024" }]);
   });
 
   it("Tier 2: key/filter placeholder collision is remapped correctly", () => {

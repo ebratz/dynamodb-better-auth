@@ -55,7 +55,12 @@ export async function resolveKEYS_ONLY(
     results.push(...resolved);
   }
 
-  return results;
+  const keyOf = (item: AnyRecord) => JSON.stringify([
+    item[followUpKeyFields.pkField],
+    followUpKeyFields.skField ? item[followUpKeyFields.skField] : null,
+  ]);
+  const byKey = new Map(results.map(item => [keyOf(item), item]));
+  return keys.flatMap(key => { const row = byKey.get(keyOf(key)); return row ? [row] : []; });
 }
 
 async function _batchGetWithRetry(

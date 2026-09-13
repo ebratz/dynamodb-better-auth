@@ -8,14 +8,14 @@ import type { FetchAllPlan } from "../src/helpers/fetch-all";
 
 // Mock the SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "QueryCommand",
-  })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "ScanCommand",
-  })),
+  }; }),
 }));
 
 describe("fetchAllByPlan", () => {

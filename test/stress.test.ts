@@ -19,14 +19,14 @@ import type { ConversionOptions } from "../src/types";
 // ── SDK mock ────────────────────────────────────────────────────
 
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  GetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "GetCommand" })),
-  PutCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "PutCommand" })),
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "UpdateCommand" })),
-  DeleteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "DeleteCommand" })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchGetCommand" })),
-  BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchWriteCommand" })),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "GetCommand" }; }),
+  PutCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "PutCommand" }; }),
+  UpdateCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "UpdateCommand" }; }),
+  DeleteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "DeleteCommand" }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "QueryCommand" }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "ScanCommand" }; }),
+  BatchGetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "BatchGetCommand" }; }),
+  BatchWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "BatchWriteCommand" }; }),
 }));
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ describe("stress", () => {
   // ══════════════════════════════════════════════════════════════
   // 3. deleteMany with 200 keys across 8 BatchWrite chunks
   // ══════════════════════════════════════════════════════════════
-  it("deleteMany chunks 200 keys into 8 BatchWrite calls", async () => {
+  it("deleteMany issues 200 conditional deletes and counts preimages", async () => {
     const TOTAL = 200;
     const BATCH = 25;
     const items = Array.from({ length: TOTAL }, (_, i) => ({
@@ -157,9 +157,9 @@ describe("stress", () => {
         if (cmd._type === "ScanCommand" || cmd._type === "QueryCommand") {
           return { Items: items };
         }
-        if (cmd._type === "BatchWriteCommand") {
+        if (cmd._type === "DeleteCommand") {
           batchWrites.push(cmd);
-          return { UnprocessedItems: {} };
+          return { Attributes: items.find(item => item.id === cmd.Key.id) };
         }
         return {};
       }),
@@ -174,15 +174,9 @@ describe("stress", () => {
     });
 
     expect(count).toBe(TOTAL);
-    expect(batchWrites.length).toBe(Math.ceil(TOTAL / BATCH)); // 8 chunks
-    // First chunk has 25, last has 200 - 7*25 = 25 (exact)
-    const keysInChunks = batchWrites.map(
-      (bw: any) => bw.RequestItems["test-users"].length,
-    );
-    expect(keysInChunks[0]).toBe(25);
-    expect(keysInChunks[7]).toBe(25);
-    const totalKeysInChunks = keysInChunks.reduce((a: number, b: number) => a + b, 0);
-    expect(totalKeysInChunks).toBe(TOTAL);
+    expect(batchWrites).toHaveLength(TOTAL);
+    expect(new Set(batchWrites.map(write => write.Key.id)).size).toBe(TOTAL);
+    expect(batchWrites.every(write => write.ConditionExpression.includes("attribute_exists"))).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════

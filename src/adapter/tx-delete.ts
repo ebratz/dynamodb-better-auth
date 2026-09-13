@@ -8,6 +8,7 @@
  * buildEmailUniquenessActions.
  */
 
+import { writeCondition, snapshotWhere } from "../helpers/write-condition";
 import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { toDefaultModelName } from "../helpers/model-name";
@@ -47,6 +48,9 @@ export async function txDelete(
     if (schema.skField) key[schema.skField] = found[schema.skField];
   }
 
+  const current = await ctx.nativeAdapter.findOne({ model: mappedModel, where });
+  if (!current) return;
+
   const isUserModel =
     ctx.config.enableEmailUniqueness &&
     toDefaultModelName(ctx.config, model) === "user";
@@ -58,7 +62,7 @@ export async function txDelete(
   if (isUserModel) {
     ctx.hasEmailUniqueness.value = true;
     // We need to read the user to get the email
-    const user = await ctx.nativeAdapter.findOne({ model: mappedModel, where });
+    const user = current;
     emailActions = buildEmailUniquenessActions("delete", ctx.config, { user: user ?? undefined });
   }
 
@@ -68,6 +72,7 @@ export async function txDelete(
     Delete: {
       TableName: tableName,
       Key: key,
+      ...writeCondition(snapshotWhere(current), schema.pkField, current),
     },
   });
   for (const action of emailActions) {

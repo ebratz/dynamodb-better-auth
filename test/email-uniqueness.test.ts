@@ -9,14 +9,14 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  TransactWriteCommand: vi.fn().mockImplementation((input: any) => ({
+  TransactWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "TransactWriteCommand",
-  })),
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  UpdateCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "UpdateCommand",
-  })),
+  }; }),
 }));
 
 // Mock crypto for deterministic tokens

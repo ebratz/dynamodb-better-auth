@@ -130,8 +130,8 @@ export interface DynamoDBAdapterConfig {
   logger?: AdapterLogger;
 
   /**
-   * Max items to scan in findMany Tier 3 with sortBy.
-   * When the full-table sort fetches more than this, throws
+   * Maximum evaluated items per findMany or bulk discovery operation.
+   * Checked after each page before further pages are requested; throws
    * DynamoAdapterError("SCAN_LIMIT_EXCEEDED").
    * Default: 10_000. Set to 0 to disable the limit.
    */
@@ -171,7 +171,7 @@ export interface AdapterLogger {
  *
  * Each hook is optional — implement only what you need. Before-hooks may
  * return a partial args object to modify the operation (e.g., adding a
- * tenantId to create data). After-hooks receive the original args plus
+ * tenantId to create data). After-hooks receive the final modified args plus
  * the result for audit logging.
  */
 export interface DynamoAdapterMiddleware {
@@ -249,7 +249,7 @@ export interface DynamoAdapterMiddleware {
 
 // ── Metrics ─────────────────────────────────────────────────────
 
-/** Callback for operational latency / error metrics. */
+/** Callback for operational latency / error metrics. Exceptions are ignored. */
 export interface AdapterMetrics {
   (event: {
     operation: string;

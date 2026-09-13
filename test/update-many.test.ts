@@ -4,38 +4,38 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({
+  UpdateCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "UpdateCommand",
-  })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "GetCommand",
-  })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "QueryCommand",
-  })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "ScanCommand",
-  })),
-  PutCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  PutCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "PutCommand",
-  })),
-  DeleteCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  DeleteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "DeleteCommand",
-  })),
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  BatchGetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "BatchGetCommand",
-  })),
-  BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  BatchWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "BatchWriteCommand",
-  })),
+  }; }),
 }));
 
 function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {

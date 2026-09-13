@@ -16,7 +16,6 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "../types";
 import type { WhereClause } from "../types";
 import { resolveQueryPlan } from "./query-planner";
-import { resolveKEYS_ONLY } from "./batch-get";
 import { fetchAllByPlan, type FetchAllPlan } from "./fetch-all";
 import { matchesClientFilters } from "./resolve-item";
 import { shouldLog } from "./debug-log";
@@ -44,6 +43,7 @@ export async function findAllItems(
   if (!where || where.length === 0) {
     return fetchAllByPlan(docClient, tableName, {
       operation: "scan",
+      maxEvaluatedItems: config.maxScanItems ?? 10_000,
       expressionAttributeNames: {},
       expressionAttributeValues: {},
     });
@@ -85,17 +85,7 @@ export async function findAllItems(
 
   // ── Tier 2: GSI Query ───────────────────────────────────────
   if (plan.operation === "query") {
-    const items = await fetchAllByPlan(docClient, tableName, plan as any);
-
-    // Follow-up BatchGetItem for KEYS_ONLY GSIs
-    if (plan.needsFollowUpGetItem && items.length > 0) {
-      return resolveKEYS_ONLY(
-        docClient,
-        tableName,
-        plan.followUpKeyFields ?? { pkField: schema.pkField, skField: schema.skField },
-        items,
-      );
-    }
+    const items = await fetchAllByPlan(docClient, tableName, { ...plan, maxEvaluatedItems: config.maxScanItems ?? 10_000 } as FetchAllPlan);
 
     return items;
   }
@@ -109,5 +99,5 @@ export async function findAllItems(
     );
   }
 
-  return fetchAllByPlan(docClient, tableName, plan as FetchAllPlan);
+  return fetchAllByPlan(docClient, tableName, { ...plan, maxEvaluatedItems: config.maxScanItems ?? 10_000 } as FetchAllPlan);
 }

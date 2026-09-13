@@ -23,7 +23,6 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { matchesClientFilters } from "../../helpers/resolve-item";
-import { resolveKEYS_ONLY } from "../../helpers/batch-get";
 import { findGsiByIndexName } from "../../helpers/gsi-resolver";
 import { fetchAllByPlan, type FetchAllPlan } from "../../helpers/fetch-all";
 import { shouldLog } from "../../helpers/debug-log";
@@ -39,7 +38,7 @@ export function findManyMethod(
   docClient: DynamoDBDocumentClient,
   config: DynamoDBAdapterConfig
 ) {
-  return async (args: {
+  const findMany = async (args: {
     model: string;
     where?: WhereClause[];
     limit?: number;
@@ -96,7 +95,9 @@ export function findManyMethod(
 
       if (nativeSort) {
         items = await fetchAllByPlan(docClient, tableName, {
+          ...plan,
           operation: "query",
+          maxEvaluatedItems: config.maxScanItems ?? 10_000,
           indexName: plan.indexName,
           keyCondition: plan.keyCondition,
           filterExpression: plan.filterExpression,
@@ -122,7 +123,9 @@ export function findManyMethod(
         // Fetch ALL matching rows (no limit — slicing first would return
         // the wrong rows), capped for safety.
         items = await fetchAllByPlan(docClient, tableName, {
+          ...plan,
           operation: "query",
+          maxEvaluatedItems: config.maxScanItems ?? 10_000,
           indexName: plan.indexName,
           keyCondition: plan.keyCondition,
           filterExpression: plan.filterExpression,
@@ -151,11 +154,6 @@ export function findManyMethod(
 
       items = items.slice(0, limit);
 
-      // Follow-up BatchGetItem for sparse (KEYS_ONLY / INCLUDE) GSIs
-      if (plan.needsFollowUpGetItem && items.length > 0) {
-        return resolveKEYS_ONLY(docClient, tableName, plan.followUpKeyFields!, items);
-      }
-
       return items;
     }
 
@@ -174,7 +172,7 @@ export function findManyMethod(
         );
       }
 
-      let items = await fetchAllByPlan(docClient, tableName, plan as FetchAllPlan);
+      let items = await fetchAllByPlan(docClient, tableName, { ...plan, maxEvaluatedItems: maxScanItems } as FetchAllPlan);
 
       // Cap: prevent unbounded full-table scans for a small limit
       if (maxScanItems > 0 && items.length > maxScanItems) {
@@ -200,6 +198,7 @@ export function findManyMethod(
     // Fetch limit + offset items to accommodate offset discard
     let items = await fetchAllByPlan(docClient, tableName, {
       operation: "scan",
+      maxEvaluatedItems: config.maxScanItems ?? 10_000,
       filterExpression: plan.filterExpression,
       expressionAttributeNames: plan.expressionAttributeNames,
       expressionAttributeValues: plan.expressionAttributeValues,
@@ -214,6 +213,11 @@ export function findManyMethod(
     }
 
     return items.slice(0, limit);
+  };
+  return async (args: Parameters<typeof findMany>[0]): Promise<AnyRecord[]> => {
+    const rows = await findMany(args);
+    if (!args.select?.length) return rows;
+    return rows.map(row => Object.fromEntries(args.select!.map(field => [field, row[field]])));
   };
 }
 

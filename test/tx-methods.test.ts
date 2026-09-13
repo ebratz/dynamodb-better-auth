@@ -16,10 +16,10 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 // Without this mock, the real module leaks into the module cache and breaks
 // transaction.test.ts when the full suite runs.
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  TransactWriteCommand: vi.fn().mockImplementation((input: any) => ({
+  TransactWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "TransactWriteCommand",
-  })),
+  }; }),
   DynamoDBDocumentClient: {
     from: vi.fn().mockImplementation((client: any) => client),
   },
@@ -234,7 +234,7 @@ describe("tx-methods", () => {
       expect(upd.TableName).toBe("test-users");
       expect(upd.Key).toEqual({ id: "u1" });
       expect(upd.UpdateExpression).toContain("SET");
-      expect(upd.ConditionExpression).toBe("attribute_exists(#pk)");
+      expect(upd.ConditionExpression).toContain("attribute_exists(#pk)");
 
       // Return value merges preState + update
       expect(result).toEqual({ id: "u1", name: "NewName", email: "old@test.com" });
@@ -321,7 +321,7 @@ describe("tx-methods", () => {
     const where = [{ field: "id", operator: "eq", value: "u1" }];
 
     it("pushes a Delete item with correct Key", async () => {
-      const ctx = makeCtx();
+      const ctx = makeCtx({ findOneResult: { id: "u1" } });
 
       await txDelete(ctx, { model: "user", where });
 
@@ -371,7 +371,7 @@ describe("tx-methods", () => {
 
     it("throws TRANSACTION_FAILED when buffer capacity exceeded", async () => {
       const writeBuffer = new Array(100).fill({ Placeholder: true });
-      const ctx = makeCtx({ writeBuffer });
+      const ctx = makeCtx({ writeBuffer, findOneResult: { id: "u1" } });
 
       await expect(
         txDelete(ctx, { model: "user", where }),
@@ -409,7 +409,7 @@ describe("tx-methods", () => {
       expect(ctx.writeBuffer[0].Update.Key).toEqual({ id: "u1" });
       expect(ctx.writeBuffer[0].Update.TableName).toBe("test-users");
       expect(ctx.writeBuffer[0].Update.UpdateExpression).toContain("SET");
-      expect(ctx.writeBuffer[0].Update.ConditionExpression).toBe("attribute_exists(#pk)");
+      expect(ctx.writeBuffer[0].Update.ConditionExpression).toContain("attribute_exists(#pk)");
       expect(ctx.writeBuffer[0].Update.ExpressionAttributeNames).toMatchObject({ "#pk": "id" });
 
       expect(ctx.writeBuffer[1].Update.Key).toEqual({ id: "u2" });
@@ -481,18 +481,18 @@ describe("tx-methods", () => {
       { id: "u3", name: "Charlie" },
     ];
 
-    it("returns 0 immediately for empty where", async () => {
+    it("deletes all matching rows for empty where", async () => {
       const ctx = makeCtx();
+      vi.mocked(ctx.nativeAdapter.findMany).mockResolvedValue(items);
 
       const count = await txDeleteMany(ctx, {
         model: "user",
         where: [],
       });
 
-      expect(count).toBe(0);
-      // Must not have called findMany
-      expect(ctx.nativeAdapter.findMany).not.toHaveBeenCalled();
-      expect(ctx.writeBuffer.length).toBe(0);
+      expect(count).toBe(3);
+      expect(ctx.nativeAdapter.findMany).toHaveBeenCalled();
+      expect(ctx.writeBuffer.length).toBe(3);
     });
 
     it("returns 0 immediately for undefined where", async () => {
@@ -626,8 +626,8 @@ describe("tx-methods", () => {
       const del = ctx.writeBuffer[0].Delete;
       expect(del.TableName).toBe("test-verifications");
       expect(del.Key).toEqual({ id: "v1" });
-      expect(del.ConditionExpression).toBe("attribute_exists(#pk)");
-      expect(del.ExpressionAttributeNames).toEqual({ "#pk": "id" });
+      expect(del.ConditionExpression).toContain("attribute_exists(#pk)");
+      expect(del.ExpressionAttributeNames).toMatchObject({ "#pk": "id" });
       expect(del.ReturnValuesOnConditionCheckFailure).toBe("ALL_OLD");
     });
 

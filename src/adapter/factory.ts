@@ -6,6 +6,7 @@
  */
 
 import { createAdapterFactory } from "better-auth/adapters";
+import type { BetterAuthOptions } from "better-auth";
 import type { DynamoDBAdapterConfig } from "../types";
 import { resolveDocClient, getTableName } from "./client";
 import { applyMiddleware } from "../helpers/apply-middleware";
@@ -20,6 +21,7 @@ import { updateMethod } from "./methods/update";
 import { updateManyMethod } from "./methods/update-many";
 import { deleteMethod } from "./methods/delete";
 import { deleteManyMethod } from "./methods/delete-many";
+import { incrementOneMethod } from "./methods/increment-one";
 import { consumeOneMethod } from "./methods/consume-one";
 import {
   createTransactionWrapper,
@@ -47,6 +49,11 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
     }
   }
 
+  // Factory helpers and reverse model mappings belong to one options instance.
+  return (options: BetterAuthOptions) => createConfiguredAdapter(config)(options);
+}
+
+function createConfiguredAdapter(config: DynamoDBAdapterConfig) {
   const docClient = resolveDocClient(config.client);
 
   // ── Forgiving tables: unknown models use model name as table name ──
@@ -83,6 +90,7 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
       applyMiddleware(extensions, "Delete", deleteMethod(docClient, forgivingConfig))),
     deleteMany: wrapWithMetrics("deleteMany", "",
       applyMiddleware(extensions, "DeleteMany", deleteManyMethod(docClient, forgivingConfig))),
+    incrementOne: wrapWithMetrics("incrementOne", "", incrementOneMethod(docClient, forgivingConfig)),
     consumeOne: wrapWithMetrics("consumeOne", "",
       applyMiddleware(extensions, "ConsumeOne", consumeOneMethod(docClient, forgivingConfig))),
   };
@@ -155,6 +163,7 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
         getDefaultModelName,
         transformWhereClause,
         getModelName,
+        getFieldName,
       } = helpers;
       if (transformInput && transformOutput && getDefaultModelName) {
         helpersRef.current = {
@@ -163,6 +172,7 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
           getDefaultModelName,
           transformWhereClause,
           getModelName,
+          getFieldName,
         };
       }
       // better-auth maps model names (usePlural / modelName overrides)
@@ -171,7 +181,13 @@ export function dynamodbAdapter(config: DynamoDBAdapterConfig) {
       if (getDefaultModelName) {
         registerModelNameResolver(forgivingConfig, getDefaultModelName);
       }
-      return nativeMethods as any;
+      return {
+        ...nativeMethods,
+        findMany: (args: Parameters<ReturnType<typeof findManyMethod>>[0]) => nativeMethods.findMany({
+          ...args,
+          select: args.select?.map(field => getFieldName?.({ model: args.model, field }) ?? field),
+        }),
+      } as any;
     },
   });
 }

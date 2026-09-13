@@ -2,7 +2,6 @@
  * Shared test utilities for DynamoDB adapter tests.
  *
  * Import in test files to eliminate the copy-pasted boilerplate:
- *   - makeMockedSdkCommands() — one-shot setup of all 9 SDK command mocks
  *   - makeDocClient(sendImpl) — full-control mock with command inspection
  *   - makeConfig(overrides) — default DynamoDBAdapterConfig for tests
  */
@@ -18,57 +17,6 @@ export const DEFAULT_TABLES: DynamoDBAdapterConfig["tables"] = {
   account: "test-accounts",
   verification: "test-verifications",
 };
-
-// ── SDK command mocks ───────────────────────────────────────────
-
-/**
- * Register mock implementations for all 9 DynamoDB SDK command classes.
- * Each mock is a pass-through stub: `{ ...input, _type: "CommandName" }`.
- *
- * Call once per test file, near the top. Must be at module scope because
- * `vi.mock` is hoisted. If your file only needs a subset, import only the
- * commands you need from `@aws-sdk/lib-dynamodb` and vi.mock them manually.
- */
-export function makeMockedSdkCommands() {
-  vi.mock("@aws-sdk/lib-dynamodb", () => ({
-    GetCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "GetCommand",
-    })),
-    PutCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "PutCommand",
-    })),
-    UpdateCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "UpdateCommand",
-    })),
-    DeleteCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "DeleteCommand",
-    })),
-    QueryCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "QueryCommand",
-    })),
-    ScanCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "ScanCommand",
-    })),
-    BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "BatchWriteCommand",
-    })),
-    BatchGetCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "BatchGetCommand",
-    })),
-    TransactWriteCommand: vi.fn().mockImplementation((input: any) => ({
-      ...input,
-      _type: "TransactWriteCommand",
-    })),
-  }));
-}
 
 // ── DocClient mocks ─────────────────────────────────────────────
 

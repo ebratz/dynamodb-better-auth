@@ -116,7 +116,8 @@ export function ttlPruneWhere(
   return (
     clause.connector !== "OR" &&
     clause.field === ttlField &&
-    (operator === "lt" || operator === "lte")
+    (operator === "lt" || operator === "lte") &&
+    (clause.value instanceof Date ? clause.value.getTime() : typeof clause.value === "number" ? clause.value : Date.parse(String(clause.value))) <= Date.now()
   );
 }
 
@@ -136,18 +137,8 @@ export function resolveQueryPlan(
     );
   }
 
-  // Expiry sweep on a TTL-backed model — DynamoDB TTL owns the cleanup.
-  // Answered without a DynamoDB call; consumers short-circuit to empty.
-  if (ttlPruneWhere(where, config.ttlFields?.[defaultModel])) {
-    return {
-      tier: 3,
-      operation: "scan",
-      tableName,
-      ttlPrune: true,
-      expressionAttributeNames: {},
-      expressionAttributeValues: {},
-    };
-  }
+  // Validate operators and modes before any key shortcut can bypass them.
+  convertWhereClause(where, { model, getFieldName: identityGetFieldName, getFieldAttributes: identityGetFieldAttributes });
 
   const schema = getKeySchema(model, config);
   const indexes = config.indexes?.[defaultModel] ?? {};
@@ -259,6 +250,7 @@ function tryTier2(
     // Found a GSI whose hash key has an eq match.
     const keyConditionClauses: WhereEntry[] = [];
     const filterClauses: WhereEntry[] = [];
+    const deferredClauses: WhereEntry[] = [];
 
     // Hash key eq goes into KeyConditionExpression
     keyConditionClauses.push({
@@ -283,7 +275,11 @@ function tryTier2(
           continue;
         }
       }
-      filterClauses.push(w);
+      const projected = gsi.projection === undefined || gsi.projection === "ALL" ||
+        w.field === schema.pkField || w.field === schema.skField ||
+        (typeof gsi.projection === "object" && gsi.projection.include.includes(w.field));
+      if (w.field === gsi.hashKey || w.field === gsi.rangeKey || !projected) deferredClauses.push(w);
+      else filterClauses.push(w);
     }
 
     // Build KeyConditionExpression and FilterExpression with collision-free
@@ -311,6 +307,11 @@ function tryTier2(
       kcOnly.expressionAttributeNames = merged.names;
       kcOnly.expressionAttributeValues = merged.values;
     }
+
+    if (deferredClauses.length) postFilters = [
+      ...(postFilters ?? []),
+      ...deferredClauses.map(w => ({ field: w.field, operator: w.operator ?? "eq", value: w.value })),
+    ];
 
     // Sparse projections (KEYS_ONLY or { include }) don't carry every
     // base-table attribute — resolve full rows via follow-up GetItem.
