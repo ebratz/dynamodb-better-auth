@@ -1,7 +1,7 @@
 {
   "name": "@ebratz/dynamodb-better-auth",
   "version": "1.1.0",
-  "description": "DynamoDB adapter for Better Auth — multi-table, three-tier query planner, TransactWriteItems transaction support",
+  "description": "DynamoDB adapter for Better Auth \u2014 multi-table, three-tier query planner, TransactWriteItems transaction support",
   "license": "MIT",
   "author": "Eduardo Bratz <ebratz@gmail.com>",
   "repository": {
@@ -13,7 +13,7 @@
     "url": "https://github.com/ebratz/dynamodb-better-auth/issues"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -40,34 +40,29 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:unit": "vitest run --exclude 'test/adapter.test.ts'",
-    "test:integration": "vitest run test/adapter.test.ts",
-    "test:coverage": "vitest run --coverage --exclude 'test/adapter.test.ts'",
+    "test:unit": "vitest run --exclude 'test/adapter.test.ts' --exclude '**/*.integration.test.ts'",
+    "test:integration": "vitest run test/adapter.test.ts test/upstream.integration.test.ts",
+    "test:coverage": "vitest run --exclude 'test/adapter.test.ts' --exclude '**/*.integration.test.ts' --coverage",
     "test:watch": "vitest",
     "prepublishOnly": "npm run typecheck && npm run test:unit && npm run build",
     "publish:public": "npm publish --access public"
   },
   "peerDependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1063.0",
-    "@aws-sdk/lib-dynamodb": "^3.1063.0",
-    "@aws-sdk/util-dynamodb": "^3.996.3",
-    "better-auth": "^1.6.14"
-  },
-  "overrides": {
-    "@better-auth/test-utils": {
-      "vitest": "^3.2.4"
-    }
+    "@aws-sdk/client-dynamodb": "^3.1131.0",
+    "@aws-sdk/lib-dynamodb": "^3.1131.0",
+    "@aws-sdk/util-dynamodb": "^3.996.9",
+    "better-auth": "^1.7.4"
   },
   "devDependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1063.0",
-    "@aws-sdk/lib-dynamodb": "^3.1063.0",
-    "@aws-sdk/util-dynamodb": "^3.996.3",
-    "@better-auth/test-utils": "^1.6.14",
+    "@aws-sdk/client-dynamodb": "3.1131.0",
+    "@aws-sdk/lib-dynamodb": "3.1131.0",
+    "@aws-sdk/util-dynamodb": "3.996.9",
+    "@better-auth/test-utils": "1.7.4",
     "@types/node": "^22.0.0",
-    "@vitest/coverage-v8": "^3.2.4",
-    "better-auth": "^1.6.14",
+    "@vitest/coverage-v8": "4.1.11",
+    "better-auth": "1.7.4",
     "typescript": "^5.7.0",
-    "vitest": "^3.2.4"
+    "vitest": "4.1.11"
   },
   "keywords": [
     "better-auth",

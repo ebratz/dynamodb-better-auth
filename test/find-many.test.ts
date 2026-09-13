@@ -5,10 +5,10 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  GetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "GetCommand" })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchGetCommand" })),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "GetCommand" }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "QueryCommand" }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "ScanCommand" }; }),
+  BatchGetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "BatchGetCommand" }; }),
 }));
 
 function makeDocClient(responses: (any | ((cmd: any) => any))[]) {

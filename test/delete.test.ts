@@ -4,10 +4,10 @@ import { makeConfig } from "./helpers";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  DeleteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "DeleteCommand" })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "GetCommand" })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
+  DeleteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "DeleteCommand" }; }),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "GetCommand" }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "QueryCommand" }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "ScanCommand" }; }),
 }));
 
 function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {

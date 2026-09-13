@@ -17,7 +17,7 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 // All SDK commands the methods under test import must exist at module load.
 vi.mock("@aws-sdk/lib-dynamodb", () => {
   const cmd = (name: string) =>
-    vi.fn().mockImplementation((input: any) => ({ ...input, _type: name }));
+    vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: name }; });
   return {
     GetCommand: cmd("GetCommand"),
     PutCommand: cmd("PutCommand"),
@@ -121,13 +121,13 @@ describe("ttlPruneWhere", () => {
 });
 
 describe("resolveQueryPlan — TTL prune", () => {
-  it("returns a ttlPrune plan for the declared sweep", () => {
+  it("keeps range predicates in the general query planner", () => {
     const plan = resolveQueryPlan(
       [{ field: "expiresAt", operator: "lt", value: new Date() }],
       "verification",
       TTL_CONFIG,
     );
-    expect(plan.ttlPrune).toBe(true);
+    expect(plan.ttlPrune).toBeFalsy();
     expect(plan.alwaysFalse).toBeFalsy();
   });
 
@@ -154,7 +154,7 @@ describe("resolveQueryPlan — TTL prune", () => {
   });
 });
 
-describe("expiry sweep is answered without a DynamoDB call", () => {
+describe("only bulk cleanup delegates to TTL", () => {
   const sweep = [{ field: "expiresAt", operator: "lt", value: new Date() }];
 
   it("findMany returns []", async () => {
@@ -166,7 +166,7 @@ describe("expiry sweep is answered without a DynamoDB call", () => {
       limit: 1,
     });
     expect(result).toEqual([]);
-    expect(docClient._calls()).toHaveLength(0);
+    expect(docClient._calls()).toHaveLength(1);
   });
 
   it("findOne returns null", async () => {
@@ -176,7 +176,7 @@ describe("expiry sweep is answered without a DynamoDB call", () => {
       where: sweep,
     });
     expect(result).toBeNull();
-    expect(docClient._calls()).toHaveLength(0);
+    expect(docClient._calls()).toHaveLength(1);
   });
 
   it("count returns 0", async () => {
@@ -186,7 +186,7 @@ describe("expiry sweep is answered without a DynamoDB call", () => {
       where: sweep,
     });
     expect(result).toBe(0);
-    expect(docClient._calls()).toHaveLength(0);
+    expect(docClient._calls()).toHaveLength(1);
   });
 
   it("deleteMany returns 0 (the maxDeleteManyItems cap is never reached)", async () => {
@@ -207,7 +207,7 @@ describe("expiry sweep is answered without a DynamoDB call", () => {
       update: { value: "x" },
     });
     expect(result).toBe(0);
-    expect(docClient._calls()).toHaveLength(0);
+    expect(docClient._calls()).toHaveLength(1);
   });
 
   it("delete is a no-op", async () => {
@@ -216,7 +216,7 @@ describe("expiry sweep is answered without a DynamoDB call", () => {
       model: "verification",
       where: sweep,
     });
-    expect(docClient._calls()).toHaveLength(0);
+    expect(docClient._calls()).toHaveLength(1);
   });
 
   it("update returns null", async () => {
@@ -227,16 +227,12 @@ describe("expiry sweep is answered without a DynamoDB call", () => {
       update: { value: "x" },
     });
     expect(result).toBeNull();
-    expect(docClient._calls()).toHaveLength(0);
+    expect(docClient._calls()).toHaveLength(1);
   });
 
-  it("consumeOne returns null", async () => {
+  it("consumeOne still rejects an unindexed range", async () => {
     const docClient = makeDocClient();
-    const result = await consumeOneMethod(docClient, TTL_CONFIG)({
-      model: "verification",
-      where: sweep,
-    });
-    expect(result).toBeNull();
+    await expect(consumeOneMethod(docClient, TTL_CONFIG)({ model: "verification", where: sweep })).rejects.toMatchObject({ code: "INVALID_WHERE" });
     expect(docClient._calls()).toHaveLength(0);
   });
 });

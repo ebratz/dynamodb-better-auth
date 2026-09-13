@@ -141,15 +141,11 @@ describe("buildUpdateExpression", () => {
     expect(result.attrValues[":v1"]).toBe("Alice");
   });
 
-  it("undefined values preserved in attrValues", () => {
-    const result = buildUpdateExpression(
-      { id: "u1", deletedAt: undefined, name: "Alice" },
-      "id",
-    );
-
-    expect(result.setClauses).toHaveLength(2);
-    expect(result.attrValues[":v0"]).toBeUndefined();
-    expect(result.attrValues[":v1"]).toBe("Alice");
+  it("undefined assignments leave fields unchanged", () => {
+    const result = buildUpdateExpression({ name: "Alice", image: undefined }, "id");
+    expect(result.setClauses).toHaveLength(1);
+    expect(Object.values(result.attrNames)).toEqual(["name"]);
+    expect(Object.values(result.attrValues)).toEqual(["Alice"]);
   });
 
   it("handles zero values (0, false, empty string)", () => {
@@ -251,25 +247,19 @@ describe("sanitizeForWrite", () => {
     expect(result).toEqual({});
   });
 
-  // Note: sanitizeForWrite performs a shallow copy (Object.entries).
-  // Nested Date objects inside sub-objects are NOT converted.
-  // This is intentional — the adapter marshals top-level values.
-  it("nested objects are passed through (shallow copy)", () => {
+  it("copies nested objects and serializes dates", () => {
     const nested = { inner: "val", date: new Date("2025-06-01T00:00:00.000Z") };
     const result = sanitizeForWrite({ meta: nested });
 
-    // The nested object is the same reference (shallow copy)
-    expect(result.meta).toBe(nested);
-    // Inner Date is NOT converted
-    expect(result.meta.date).toBeInstanceOf(Date);
+    expect(result.meta).not.toBe(nested);
+    expect(result.meta.date).toBe(nested.date.toISOString());
+    expect(nested.date).toBeInstanceOf(Date);
   });
 
-  it("Date in nested object is NOT converted (shallow only)", () => {
+  it("serializes a Date in a nested object", () => {
     const nestedDate = new Date("2025-06-01T00:00:00.000Z");
     const result = sanitizeForWrite({ meta: { date: nestedDate } });
 
-    // The nested object is passed through as-is
-    expect(result.meta).toEqual({ date: nestedDate });
-    expect((result.meta as any).date).toBeInstanceOf(Date);
+    expect(result.meta).toEqual({ date: nestedDate.toISOString() });
   });
 });

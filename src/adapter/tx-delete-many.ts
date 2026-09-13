@@ -6,9 +6,11 @@
  * transaction capacity guard as the loud 100-action backstop), builds
  * composite keys, then buffers a Delete action per item. Returns count.
  *
- * Includes empty-where guard: where: [] returns 0 without scanning.
+ * An empty where array matches every existing row, subject to action limits.
  */
 
+import { writeCondition, snapshotWhere } from "../helpers/write-condition";
+import { buildEmailUniquenessActions } from "../email-uniqueness";
 import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { DynamoAdapterError } from "../errors";
@@ -24,8 +26,7 @@ export async function txDeleteMany(
 ): Promise<number> {
   const { model } = args;
 
-  // Guard: empty where clause would delete everything
-  if (!args.where || args.where.length === 0) return 0;
+  if (!args.where) return 0;
 
   const helpers = ctx.getHelpers();
   const mappedModel = helpers.getModelName?.(model) ?? model;
@@ -40,7 +41,7 @@ export async function txDeleteMany(
 
   // Find ALL matching items — the raw findMany would default to 100.
   const maxItems = ctx.config.maxDeleteManyItems ?? 1000;
-  const fetchLimit = maxItems > 0 ? maxItems + 1 : undefined;
+  const fetchLimit = maxItems > 0 ? maxItems + 1 : 101;
   const items = await ctx.nativeAdapter.findMany({
     model: mappedModel,
     where,
@@ -67,7 +68,7 @@ export async function txDeleteMany(
   // intent exactly.
   const alreadyTargeted = (key: Record<string, any>) =>
     ctx.writeBuffer.some((action: any) => {
-      const op = action.Delete ?? action.Put ?? action.Update ?? action.ConditionCheck;
+      const op = action.Delete;
       if (!op || op.TableName !== tableName) return false;
       const target = op.Key ?? op.Item;
       return (
@@ -86,14 +87,25 @@ export async function txDeleteMany(
     })
     .filter((key) => !alreadyTargeted(key));
 
-  // Block >100 actions
+  // A pending update followed by deletion becomes a deletion. Preserve its
+  // optimistic guard through the original row snapshot below.
+  for (const key of keys) {
+    const index = ctx.writeBuffer.findIndex(action => action.Update?.TableName === tableName && Object.entries(key).every(([field, value]) => action.Update.Key[field] === value));
+    if (index >= 0) ctx.writeBuffer.splice(index, 1);
+  }
   assertTransactionCapacity(ctx.writeBuffer, keys.length);
 
   for (const key of keys) {
+    const item = items.find(row => Object.entries(key).every(([field, value]) => row[field] === value))!;
+    const claims = ctx.config.enableEmailUniqueness && helpers.getDefaultModelName(model) === "user"
+      ? buildEmailUniquenessActions("delete", ctx.config, { user: item }) : [];
+    assertTransactionCapacity(ctx.writeBuffer, 1 + claims.length);
+    ctx.writeBuffer.push(...claims);
     ctx.writeBuffer.push({
       Delete: {
         TableName: tableName,
         Key: key,
+        ...writeCondition(snapshotWhere(item), schema.pkField, item),
       },
     });
   }

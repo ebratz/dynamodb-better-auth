@@ -52,6 +52,10 @@ const REQUIRED_TABLES = ["user", "session", "account", "verification"] as const;
  */
 export function validateConfig(config: DynamoDBAdapterConfig): string[] {
   const warnings: string[] = [];
+  if (config.updateManyConcurrency !== undefined &&
+      (!Number.isInteger(config.updateManyConcurrency) || config.updateManyConcurrency < 1)) {
+    throw new DynamoAdapterError("INVALID_CONFIG", "updateManyConcurrency must be a positive integer.");
+  }
 
   // ── Critical: required core tables ──────────────────────────
   for (const model of REQUIRED_TABLES) {

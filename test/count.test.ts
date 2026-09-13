@@ -4,8 +4,8 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK so command input props are spread onto the object
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "ScanCommand" }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "QueryCommand" }; }),
 }));
 
 function makeDocClient(responses: any[]) {
@@ -236,7 +236,7 @@ describe("count", () => {
     expect(cmd._type).toBe("QueryCommand");
     expect(cmd.IndexName).toBe("email-index");
     expect(cmd.Select).toBe("COUNT");
-    expect(cmd.KeyConditionExpression).toContain("#hk = :hv");
+    expect(cmd.KeyConditionExpression).toContain("#n0 = :v0");
   });
 
   it("uses QueryCommand on GSI with extra where clauses as FilterExpression", async () => {
@@ -259,7 +259,7 @@ describe("count", () => {
     const [cmd] = docClient._capture();
     expect(cmd._type).toBe("QueryCommand");
     expect(cmd.IndexName).toBe("email-index");
-    expect(cmd.KeyConditionExpression).toContain("#hk = :hv");
+    expect(cmd.KeyConditionExpression).toContain("#n0 = :v0");
     // Extra where clause becomes FilterExpression
     expect(cmd.FilterExpression).toBeDefined();
   });

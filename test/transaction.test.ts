@@ -4,18 +4,13 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  TransactWriteCommand: vi.fn().mockImplementation((input: any) => ({
+  TransactWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "TransactWriteCommand",
-  })),
+  }; }),
   DynamoDBDocumentClient: {
     from: vi.fn().mockImplementation((client: any) => client),
   },
-}));
-
-// Mock crypto
-vi.mock("crypto", () => ({
-  randomUUID: () => "tx-uuid-0000-0000-0000-000000000000",
 }));
 
 function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {
@@ -228,7 +223,7 @@ describe("transaction", () => {
         return {};
       });
 
-      const nativeAdapter = makeNativeAdapter();
+      const nativeAdapter = makeNativeAdapter({ findOne: vi.fn().mockResolvedValue({ id: "u1" }) });
       const config = makeConfig(docClient);
       const tx = createTransactionWrapper(nativeAdapter, config, getTable);
 
@@ -792,7 +787,7 @@ describe("transaction", () => {
         return {};
       });
 
-      const nativeAdapter = makeNativeAdapter();
+      const nativeAdapter = makeNativeAdapter({ findOne: vi.fn().mockResolvedValue({ id: "u1" }) });
       const config = makeConfig(docClient);
       const tx = createTransactionWrapper(nativeAdapter, config, getTable);
 

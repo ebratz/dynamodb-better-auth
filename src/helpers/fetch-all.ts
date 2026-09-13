@@ -14,6 +14,7 @@
  * full-table read — the helper throws instead.
  */
 
+import { resolveKEYS_ONLY } from "./batch-get";
 import { QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { compactExpr } from "./expression-names";
@@ -29,6 +30,9 @@ type AnyRecord = Record<string, any>;
  */
 export interface FetchAllPlan {
   operation: "query" | "scan";
+  needsFollowUpGetItem?: boolean;
+  followUpKeyFields?: { pkField: string; skField?: string };
+  maxEvaluatedItems?: number;
   indexName?: string;
   keyCondition?: string;
   filterExpression?: string;
@@ -72,7 +76,15 @@ export async function fetchAllByPlan(
   let lastKey: AnyRecord | undefined;
   const remaining = plan.limit;
 
-  const collect = (pageItems: AnyRecord[] | undefined) => {
+  let evaluated = 0;
+  const collect = async (pageItems: AnyRecord[] | undefined, scanned?: number) => {
+    evaluated += scanned ?? pageItems?.length ?? 0;
+    if (plan.maxEvaluatedItems && evaluated > plan.maxEvaluatedItems) {
+      throw new DynamoAdapterError("SCAN_LIMIT_EXCEEDED", `Read examined more than ${plan.maxEvaluatedItems} items.`);
+    }
+    if (pageItems?.length && plan.needsFollowUpGetItem && plan.followUpKeyFields) {
+      pageItems = await resolveKEYS_ONLY(docClient, tableName, plan.followUpKeyFields, pageItems);
+    }
     if (!pageItems) return;
     const matched =
       plan.postFilters && plan.postFilters.length > 0
@@ -102,7 +114,7 @@ export async function fetchAllByPlan(
       }
 
       const result = await docClient.send(new QueryCommand(cmd));
-      collect(result.Items as AnyRecord[] | undefined);
+      await collect(result.Items as AnyRecord[] | undefined, result.ScannedCount);
       lastKey = result.LastEvaluatedKey;
     } while (lastKey && (remaining === undefined || items.length < remaining));
   } else {
@@ -122,7 +134,7 @@ export async function fetchAllByPlan(
       }
 
       const result = await docClient.send(new ScanCommand(cmd));
-      collect(result.Items as AnyRecord[] | undefined);
+      await collect(result.Items as AnyRecord[] | undefined, result.ScannedCount);
       lastKey = result.LastEvaluatedKey;
     } while (lastKey && (remaining === undefined || items.length < remaining));
   }

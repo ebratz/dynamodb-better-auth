@@ -26,6 +26,10 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig } from "./types";
 import { DynamoAdapterError } from "./errors";
 import { generateToken } from "./helpers/uuid";
+import { getKeySchema } from "./helpers/key-builder";
+import { writeCondition, snapshotWhere } from "./helpers/write-condition";
+import { withTtlAttribute } from "./helpers/ttl";
+import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { buildUpdateExpression } from "./helpers/update-item";
 
 // ── Shared error parser ─────────────────────────────────────────
@@ -51,7 +55,7 @@ export function parseEmailUniquenessError(
     if (reasons[i]?.Code === "ConditionalCheckFailed") {
       const item = transactItems[i];
       // Detect email-lookup items by _meta tag (set by buildEmailUniquenessActions)
-      if (item?._meta?.type === "email-lookup") {
+      if (item?.Put && item?._meta?.type === "email-lookup") {
         return new DynamoAdapterError(
           "EMAIL_EXISTS",
           "Email is already registered",
@@ -97,9 +101,9 @@ export async function createUserWithEmailUniqueness(
   const userPut = {
     Put: {
       TableName: userTable,
-      Item: data,
+      Item: withTtlAttribute(config, "user", data),
       ConditionExpression: "attribute_not_exists(#pk)",
-      ExpressionAttributeNames: { "#pk": "id" },
+      ExpressionAttributeNames: { "#pk": getKeySchema("user", config).pkField },
     },
   };
 
@@ -155,7 +159,8 @@ export async function deleteUserWithEmailRelease(
   const userDelete = {
     Delete: {
       TableName: userTable,
-      Key: { id: user.id as string },
+      Key: userKey(config, user),
+      ...writeCondition(snapshotWhere(user), getKeySchema("user", config).pkField, user),
     },
   };
 
@@ -196,8 +201,9 @@ export async function updateUserEmailWithUniqueness(
 
   // Build SET clauses via shared helper (strips PK "id", Date → ISO)
   const { setClauses, attrNames, attrValues } = buildUpdateExpression(
-    patch as Record<string, any>,
-    "id",
+    Object.fromEntries(Object.entries(patch).filter(([key]) => key !== "email")),
+    getKeySchema("user", config).pkField,
+    getKeySchema("user", config).skField,
   );
 
   // Append the email SET clause (buildUpdateExpression strips PK, not email,
@@ -208,14 +214,15 @@ export async function updateUserEmailWithUniqueness(
   setClauses.push(`#n${emailIdx} = :v${emailIdx}`);
 
   // User Update
+  const condition = writeCondition(snapshotWhere(user), getKeySchema("user", config).pkField, user);
   const userUpdate = {
     Update: {
       TableName: userTable,
-      Key: { id: userId },
+      Key: userKey(config, user),
       UpdateExpression: `SET ${setClauses.join(", ")}`,
-      ExpressionAttributeNames: { ...attrNames, "#pk": "id" },
-      ExpressionAttributeValues: attrValues,
-      ConditionExpression: "attribute_exists(#pk)",
+      ...condition,
+      ExpressionAttributeNames: { ...attrNames, ...condition.ExpressionAttributeNames },
+      ExpressionAttributeValues: { ...attrValues, ...condition.ExpressionAttributeValues },
     },
   };
 
@@ -259,7 +266,7 @@ export async function updateUserEmailWithUniqueness(
 
 type TransactWriteItem =
   | { Put: { TableName: string; Item: Record<string, unknown>; ConditionExpression?: string; ExpressionAttributeNames?: Record<string, string> }; _meta?: { type: string } }
-  | { Delete: { TableName: string; Key: Record<string, unknown> }; _meta?: { type: string } }
+  | { Delete: { TableName: string; Key: Record<string, unknown>; ConditionExpression?: string; ExpressionAttributeNames?: Record<string, string>; ExpressionAttributeValues?: Record<string, unknown> }; _meta?: { type: string } }
   | { Update: { TableName: string; Key: Record<string, unknown>; UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; ConditionExpression?: string }; _meta?: { type: string } };
 
 /**
@@ -322,6 +329,9 @@ export function buildEmailUniquenessActions(
           Delete: {
             TableName: emailTable,
             Key: { email },
+            ConditionExpression: "attribute_not_exists(#email) OR #owner = :owner",
+            ExpressionAttributeNames: { "#email": "email", "#owner": "userId" },
+            ExpressionAttributeValues: { ":owner": opts.user?.id },
           },
         },
       ];
@@ -332,7 +342,7 @@ export function buildEmailUniquenessActions(
       const newEmailLower = opts.newEmail?.toLowerCase();
       const userId = opts.user?.id as string;
 
-      if (!oldEmailLower || !newEmailLower || !userId) return [];
+      if (!oldEmailLower || !newEmailLower || !userId || oldEmailLower === newEmailLower) return [];
 
       return [
         {
@@ -340,6 +350,9 @@ export function buildEmailUniquenessActions(
           Delete: {
             TableName: emailTable,
             Key: { email: oldEmailLower },
+            ConditionExpression: "attribute_not_exists(#email) OR #owner = :owner",
+            ExpressionAttributeNames: { "#email": "email", "#owner": "userId" },
+            ExpressionAttributeValues: { ":owner": userId },
           },
         },
         {
@@ -356,5 +369,36 @@ export function buildEmailUniquenessActions(
 
     default:
       return [];
+  }
+}
+
+function userKey(config: DynamoDBAdapterConfig, user: Record<string, unknown>) {
+  const schema = getKeySchema("user", config);
+  return { [schema.pkField]: user[schema.pkField], ...(schema.skField ? { [schema.skField]: user[schema.skField] } : {}) };
+}
+
+/** Commit a conditional user mutation and its ownership-guarded claim changes. */
+export async function commitUserMutation(
+  docClient: DynamoDBDocumentClient,
+  config: DynamoDBAdapterConfig,
+  user: Record<string, unknown>,
+  mutation: NonNullable<TransactWriteCommandInput["TransactItems"]>[number],
+  newEmail?: string,
+): Promise<boolean> {
+  const claims = buildEmailUniquenessActions(newEmail === undefined ? "delete" : "updateEmail", config, {
+    user, oldEmail: user.email as string, newEmail,
+  });
+  const actions = [mutation, ...claims];
+  try {
+    await docClient.send(new TransactWriteCommand({ TransactItems: actions, ClientRequestToken: generateToken() }));
+    return true;
+  } catch (error: unknown) {
+    const emailError = parseEmailUniquenessError(error, actions, config.tables.emailLookups ?? "");
+    if (emailError) throw emailError;
+    if (error instanceof Error && error.name === "TransactionCanceledException" &&
+      "CancellationReasons" in error && Array.isArray(error.CancellationReasons) &&
+      error.CancellationReasons.some(reason => reason.Code === "ConditionalCheckFailed") &&
+      error.CancellationReasons.every(reason => !reason.Code || ["None", "ConditionalCheckFailed"].includes(reason.Code))) return false;
+    throw error;
   }
 }

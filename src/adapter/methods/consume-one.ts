@@ -15,6 +15,8 @@
  * Returns the deleted item's Attributes, or null if no item matched.
  */
 
+import { deleteItem } from "../../helpers/delete-item";
+import { findOneMethod } from "./find-one";
 import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
@@ -45,6 +47,7 @@ export function consumeOneMethod(
     if (plan.alwaysFalse || plan.ttlPrune) return null;
 
     let key: Record<string, any>;
+    let snapshot: Record<string, unknown> | undefined;
     let conditionFilters = plan.clientSideFilters;
 
     if (plan.tier === 1) {
@@ -61,6 +64,7 @@ export function consumeOneMethod(
         model,
       );
       if (!item) return null;
+      snapshot = item;
       key = { [schema.pkField]: item[schema.pkField] };
       if (schema.skField && item[schema.skField] !== undefined) {
         key[schema.skField] = item[schema.skField];
@@ -90,70 +94,10 @@ export function consumeOneMethod(
       );
     }
 
-    // ── Fold extra where clauses into an atomic ConditionExpression ──
-    // GetItem/Delete have no FilterExpression, but Delete supports a
-    // ConditionExpression — the "consume only if still valid" guard must
-    // hold at delete time, not at a separate read.
-    let condition:
-      | { expression: string; names: Record<string, string>; values: Record<string, any> }
-      | undefined;
-
-    if (conditionFilters && conditionFilters.length > 0) {
-      const filter = resolveFilter(
-        conditionFilters.map((f) => ({
-          field: f.field,
-          operator: f.operator,
-          value: f.value,
-        })) as WhereClause[],
-        model,
-        config,
-      );
-      if (filter?.alwaysFalse) return null;
-
-      if (filter?.postFilters && filter.postFilters.length > 0) {
-        // ends_with cannot be expressed in a ConditionExpression.
-        // Pre-verify client-side (narrow TOCTOU window), then delete with
-        // the server-expressible remainder of the condition.
-        const preCheck = await docClient.send(
-          new GetCommand({ TableName: tableName, Key: key }),
-        );
-        const item = (preCheck.Item as any) ?? null;
-        if (!item || !matchesClientFilters(item, conditionFilters)) {
-          return null;
-        }
-      }
-      if (filter?.expression) {
-        condition = {
-          expression: filter.expression,
-          names: filter.expressionAttributeNames,
-          values: filter.expressionAttributeValues,
-        };
-      }
+    if (!snapshot && (where.some(clause => clause.operator === "ends_with") || config.enableEmailUniqueness)) {
+      snapshot = await findOneMethod(docClient, config)({ model, where }) ?? undefined;
+      if (!snapshot) return null;
     }
-
-    // ── Atomic delete with pre-state capture ──────────────────
-    try {
-      const result = await docClient.send(
-        new DeleteCommand({
-          TableName: tableName,
-          Key: key,
-          ReturnValues: "ALL_OLD",
-          ...(condition
-            ? {
-                ConditionExpression: condition.expression,
-                ...compactExpr(condition.names, condition.values),
-              }
-            : {}),
-        }),
-      );
-      return (result.Attributes as any) ?? null;
-    } catch (err: any) {
-      // Condition failed → the item doesn't satisfy the extra where
-      // clauses (or was consumed concurrently) → not consumed.
-      if (err.name === "ConditionalCheckFailedException") {
-        return null;
-      }
-      throw err;
-    }
+    return deleteItem(docClient, config, model, key, where, snapshot);
   };
 }

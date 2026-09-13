@@ -19,10 +19,14 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
+import { writeCondition, snapshotWhere } from "../../helpers/write-condition";
+import { commitUserMutation } from "../../email-uniqueness";
+import { toDefaultModelName } from "../../helpers/model-name";
+import { findOneMethod } from "./find-one";
 import { getKeySchema } from "../../helpers/key-builder";
 import { resolveQueryPlan } from "../../helpers/query-planner";
 import { resolveItemByPlan, matchesClientFilters } from "../../helpers/resolve-item";
-import { buildUpdateExpression } from "../../helpers/update-item";
+import { buildUpdateExpression, sanitizeForWrite } from "../../helpers/update-item";
 import { withTtlAttribute } from "../../helpers/ttl";
 import { getTableName } from "../client";
 import { DynamoAdapterError } from "../../errors";
@@ -49,6 +53,7 @@ export function updateMethod(
 
     // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
+    let snapshot: Record<string, unknown> | undefined;
 
     if (plan.tier === 1) {
       // Tier-1 keys are always complete (the planner falls through to
@@ -60,6 +65,7 @@ export function updateMethod(
           new GetCommand({ TableName: tableName, Key: plan.key! }),
         );
         const item = (current.Item as any) ?? null;
+        snapshot = item;
         if (!item || !matchesClientFilters(item, plan.clientSideFilters)) {
           return null;
         }
@@ -75,6 +81,7 @@ export function updateMethod(
         model,
       );
       if (!item) return null;
+      snapshot = item;
       key = { [schema.pkField]: item[schema.pkField] };
       if (schema.skField && item[schema.skField] !== undefined) {
         key[schema.skField] = item[schema.skField];
@@ -100,6 +107,22 @@ export function updateMethod(
       return (result.Item as any) ?? null;
     }
 
+    if (config.enableEmailUniqueness && toDefaultModelName(config, model) === "user" && update.email !== undefined) {
+      const user = snapshot ?? await findOneMethod(docClient, config)({ model, where });
+      if (!user) return null;
+      const guard = writeCondition(snapshotWhere(user), schema.pkField, user);
+      const committed = await commitUserMutation(docClient, config, user, { Update: {
+        TableName: tableName, Key: key, UpdateExpression: `SET ${setClauses.join(", ")}`,
+        ...guard,
+        ExpressionAttributeNames: { ...attrNames, ...guard.ExpressionAttributeNames },
+        ExpressionAttributeValues: { ...attrValues, ...guard.ExpressionAttributeValues },
+      } }, update.email);
+      const patch = Object.fromEntries(Object.entries(withTtlAttribute(config, model, update)).filter(([field, value]) =>
+        value !== undefined && field !== schema.pkField && field !== schema.skField));
+      return committed ? { ...user, ...sanitizeForWrite(patch) } : null;
+    }
+    const condition = writeCondition(where, schema.pkField, snapshot);
+
     // ── Execute UpdateItem ─────────────────────────────────────
     // ConditionExpression (#pk) guards against upsert on missing
     // items. #pk is distinct from buildUpdateExpression's #nX
@@ -110,9 +133,9 @@ export function updateMethod(
           TableName: tableName,
           Key: key,
           UpdateExpression: `SET ${setClauses.join(", ")}`,
-          ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
-          ExpressionAttributeValues: attrValues,
-          ConditionExpression: "attribute_exists(#pk)",
+          ...condition,
+          ExpressionAttributeNames: { ...attrNames, ...condition.ExpressionAttributeNames },
+          ExpressionAttributeValues: { ...attrValues, ...condition.ExpressionAttributeValues },
           ReturnValues: "ALL_NEW",
         }),
       );
@@ -131,5 +154,4 @@ export function updateMethod(
     }
   };
 }
-
 

@@ -137,7 +137,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("customTransformInput converts Date → ISO string for date fields", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const input = capturedFactoryArg.config.customTransformInput;
     const d = new Date("2026-05-30T18:00:00.000Z");
     expect(input({ data: d, fieldAttributes: { type: "date" } })).toBe(
@@ -146,7 +146,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("customTransformInput passes non-date values unchanged", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const input = capturedFactoryArg.config.customTransformInput;
     expect(input({ data: "hello", fieldAttributes: { type: "string" } })).toBe(
       "hello",
@@ -155,7 +155,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("customTransformInput passes non-Date values through even on date fields", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const input = capturedFactoryArg.config.customTransformInput;
     // Already-stringified ISO comes through unchanged (e.g., from prior layer)
     expect(
@@ -164,7 +164,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("customTransformOutput converts ISO string → Date for date fields", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const output = capturedFactoryArg.config.customTransformOutput;
     const result = output({
       data: "2026-05-30T18:00:00.000Z",
@@ -175,7 +175,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("customTransformOutput passes null/undefined through on date fields", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const output = capturedFactoryArg.config.customTransformOutput;
     expect(output({ data: null, fieldAttributes: { type: "date" } })).toBeNull();
     expect(
@@ -184,7 +184,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("customTransformOutput passes non-date values unchanged", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const output = capturedFactoryArg.config.customTransformOutput;
     expect(
       output({ data: "hello", fieldAttributes: { type: "string" } }),
@@ -193,7 +193,7 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("data-type flags are set per DESIGN.md §8", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const c = capturedFactoryArg.config;
     expect(c.supportsJSON).toBe(true);
     expect(c.supportsDates).toBe(true);
@@ -203,14 +203,14 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("adapterId and adapterName are set", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const c = capturedFactoryArg.config;
     expect(c.adapterId).toBe("dynamodb-adapter");
     expect(c.adapterName).toBe("DynamoDB Adapter");
   });
 
-  it("adapter() returns the native methods bag (all 9 methods)", () => {
-    dynamodbAdapter(baseConfig);
+  it("adapter() returns the native methods bag (all 10 methods)", () => {
+    dynamodbAdapter(baseConfig)({});
     const methods = capturedFactoryArg.adapter();
     expect(typeof methods.create).toBe("function");
     expect(typeof methods.findOne).toBe("function");
@@ -221,10 +221,11 @@ describe("dynamodbAdapter — transform lambdas", () => {
     expect(typeof methods.delete).toBe("function");
     expect(typeof methods.deleteMany).toBe("function");
     expect(typeof methods.consumeOne).toBe("function");
+    expect(typeof methods.incrementOne).toBe("function");
   });
 
   it("forgiving tables Proxy: known model returns mapped name", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     // The proxied tables object lives on the native methods' config — exercise
     // it through getTableName.
     expect(getTableName("user", baseConfig)).toBe("test-users");
@@ -249,14 +250,14 @@ describe("dynamodbAdapter — transform lambdas", () => {
   });
 
   it("adapter() accepts helpers and returns native methods bag", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const adapterFn = capturedFactoryArg.adapter;
     const methods = adapterFn({
       transformInput: vi.fn(),
       transformOutput: vi.fn(),
       getDefaultModelName: vi.fn().mockReturnValue("user"),
     });
-    // Should still return all 9 methods even when helpers are provided
+    // Should still return all 10 methods even when helpers are provided
     expect(typeof methods.create).toBe("function");
     expect(typeof methods.findOne).toBe("function");
     expect(typeof methods.findMany).toBe("function");
@@ -266,14 +267,16 @@ describe("dynamodbAdapter — transform lambdas", () => {
     expect(typeof methods.delete).toBe("function");
     expect(typeof methods.deleteMany).toBe("function");
     expect(typeof methods.consumeOne).toBe("function");
+    expect(typeof methods.incrementOne).toBe("function");
   });
 
   it("adapter() with incomplete helpers still returns methods (no crash)", () => {
-    dynamodbAdapter(baseConfig);
+    dynamodbAdapter(baseConfig)({});
     const adapterFn = capturedFactoryArg.adapter;
     // Pass helpers without transformInput — should still work (helpersRef.current stays null)
     const methods = adapterFn({});
     expect(typeof methods.create).toBe("function");
     expect(typeof methods.consumeOne).toBe("function");
+    expect(typeof methods.incrementOne).toBe("function");
   });
 });

@@ -10,6 +10,8 @@
  * Missing item → silently OK (no-op).
  */
 
+import { deleteItem } from "../../helpers/delete-item";
+import { findOneMethod } from "./find-one";
 import { DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
@@ -39,6 +41,7 @@ export function deleteMethod(
 
     // ── Resolve key ────────────────────────────────────────────
     let key: Record<string, any>;
+    let snapshot: Record<string, unknown> | undefined;
 
     if (plan.tier === 1) {
       // Tier-1 keys are always complete (the planner falls through to
@@ -51,6 +54,7 @@ export function deleteMethod(
           new GetCommand({ TableName: tableName, Key: plan.key! }),
         );
         const item = (current.Item as any) ?? null;
+        snapshot = item;
         if (!item || !matchesClientFilters(item, plan.clientSideFilters)) {
           return; // silently OK — nothing matching to delete
         }
@@ -66,20 +70,16 @@ export function deleteMethod(
         model,
       );
       if (!item) return; // silently OK — nothing to delete
+      snapshot = item;
       key = { [schema.pkField]: item[schema.pkField] };
       if (schema.skField && item[schema.skField] !== undefined) {
         key[schema.skField] = item[schema.skField];
       }
     }
 
-    // ── Execute DeleteItem ─────────────────────────────────────
-    await docClient.send(
-      new DeleteCommand({
-        TableName: tableName,
-        Key: key,
-      }),
-    );
+    if (config.enableEmailUniqueness && !snapshot) {
+      snapshot = await findOneMethod(docClient, config)({ model, where }) ?? undefined;
+    }
+    await deleteItem(docClient, config, model, key, where, snapshot);
   };
 }
-
-

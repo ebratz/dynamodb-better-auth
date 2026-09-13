@@ -10,18 +10,18 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "QueryCommand",
-  })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "ScanCommand",
-  })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "GetCommand",
-  })),
+  }; }),
 }));
 
 // Mock shouldLog to suppress console spam in tests

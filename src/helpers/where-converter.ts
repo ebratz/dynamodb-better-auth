@@ -86,12 +86,20 @@ type OperatorStrategy = (
 
 const operators: Record<string, OperatorStrategy> = {
   eq: (fieldRef, value, vi, values) => {
+    if (value === null) {
+      values[`:v${vi}`] = "NULL";
+      return { frag: `(attribute_not_exists(${fieldRef}) OR attribute_type(${fieldRef}, :v${vi}))`, valueIndex: vi + 1 };
+    }
     const ref = `:v${vi}`;
     values[ref] = sanitizeValue(value);
     return { frag: `${fieldRef} = ${ref}`, valueIndex: vi + 1 };
   },
 
   ne: (fieldRef, value, vi, values) => {
+    if (value === null) {
+      values[`:v${vi}`] = "NULL";
+      return { frag: `(attribute_exists(${fieldRef}) AND NOT attribute_type(${fieldRef}, :v${vi}))`, valueIndex: vi + 1 };
+    }
     const ref = `:v${vi}`;
     values[ref] = sanitizeValue(value);
     return { frag: `${fieldRef} <> ${ref}`, valueIndex: vi + 1 };

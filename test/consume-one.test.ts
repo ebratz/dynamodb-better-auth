@@ -4,14 +4,14 @@ import type { DynamoDBAdapterConfig } from "../src/types";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  DeleteCommand: vi.fn().mockImplementation((input: any) => ({
+  DeleteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "DeleteCommand",
-  })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "QueryCommand",
-  })),
+  }; }),
 }));
 
 function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {

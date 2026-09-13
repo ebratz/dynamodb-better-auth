@@ -22,6 +22,8 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../../types";
+import { writeCondition } from "../../helpers/write-condition";
+import { toDefaultModelName } from "../../helpers/model-name";
 import { getKeySchema } from "../../helpers/key-builder";
 import { findAllItems } from "../../helpers/find-items";
 import { buildUpdateExpression } from "../../helpers/update-item";
@@ -42,6 +44,9 @@ export function updateManyMethod(
     update: Record<string, any>;
   }): Promise<number> => {
     const { model, where, update } = args;
+    if (config.enableEmailUniqueness && toDefaultModelName(config, model) === "user" && update.email !== undefined) {
+      throw new DynamoAdapterError("INVALID_DATA", "Bulk email changes are not supported with email uniqueness. Update users individually.");
+    }
     const tableName = getTableName(model, config);
     const schema = getKeySchema(model, config);
 
@@ -86,7 +91,7 @@ export function updateManyMethod(
     const { results, errors } = await _parallelLimit(
       items,
       concurrency,
-      (item) => _updateOne(docClient, tableName, item, updateWithTtl, schema),
+      (item) => _updateOne(docClient, tableName, item, updateWithTtl, schema, where),
     );
 
     if (errors.length > 0) {
@@ -118,6 +123,7 @@ async function _updateOne(
   item: Record<string, any>,
   update: Record<string, any>,
   schema: { pkField: string; skField?: string },
+  where: WhereClause[],
 ): Promise<boolean> {
   const key: Record<string, any> = { [schema.pkField]: item[schema.pkField] };
   if (schema.skField) key[schema.skField] = item[schema.skField!];
@@ -130,15 +136,16 @@ async function _updateOne(
 
   if (setClauses.length === 0) return false;
 
+  const condition = writeCondition(where, schema.pkField, item);
   try {
     await docClient.send(
       new UpdateCommand({
         TableName: tableName,
         Key: key,
         UpdateExpression: `SET ${setClauses.join(", ")}`,
-        ExpressionAttributeNames: { ...attrNames, "#pk": schema.pkField },
-        ExpressionAttributeValues: attrValues,
-        ConditionExpression: "attribute_exists(#pk)",
+        ...condition,
+        ExpressionAttributeNames: { ...attrNames, ...condition.ExpressionAttributeNames },
+        ExpressionAttributeValues: { ...attrValues, ...condition.ExpressionAttributeValues },
       }),
     );
     return true;

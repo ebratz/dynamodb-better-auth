@@ -3,7 +3,7 @@ import { createMethod } from "../src/adapter/methods/create";
 import { DEFAULT_TABLES, makeConfig } from "./helpers";
 
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  PutCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "PutCommand" })),
+  PutCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "PutCommand" }; }),
 }));
 
 function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {

@@ -20,6 +20,7 @@ export function tryBuildTxKey(
   where: WhereClause[],
   schema: KeySchema,
 ): Record<string, any> | null {
+  if (where.some((clause, i) => i > 0 && clause.connector === "OR")) return null;
   const pkEq = where.find(
     (w: WhereClause) => w.field === schema.pkField && (!w.operator || w.operator === "eq"),
   );

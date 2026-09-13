@@ -45,6 +45,7 @@ export interface TransactionFactoryHelpers {
   }) => any[] | undefined;
   /** Maps a default model name to its usePlural / modelName-mapped form. */
   getModelName?: (model: string) => string;
+  getFieldName?: (args: { model: string; field: string }) => string;
 }
 
 /**

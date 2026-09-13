@@ -1,0 +1,274 @@
+{
+  "reviewDate": "2026-09-12",
+  "node": "24.20.0",
+  "baseline": {
+    "better-auth": "1.6.14",
+    "@better-auth/test-utils": "1.6.14",
+    "@aws-sdk/client-dynamodb": "3.1063.0",
+    "@aws-sdk/lib-dynamodb": "3.1063.0",
+    "@aws-sdk/util-dynamodb": "3.996.3",
+    "vitest": "3.2.4",
+    "unitTestsPassed": 614,
+    "typecheck": "passed",
+    "build": "passed"
+  },
+  "latestExperiment": {
+    "better-auth": "1.7.4",
+    "@better-auth/test-utils": "1.7.4",
+    "@aws-sdk/client-dynamodb": "3.1131.0",
+    "@aws-sdk/lib-dynamodb": "3.1131.0",
+    "@aws-sdk/util-dynamodb": "3.996.9",
+    "vitest": "3.2.7",
+    "unitTestsPassed": 614,
+    "typecheck": "passed"
+  },
+  "limitations": [
+    "DynamoDB network boundary replaced by deterministic command doubles; no live AWS or DynamoDB Local validation.",
+    "Latest experiment was a fresh install in /tmp; other permitted dev/transitive dependencies also resolved freshly.",
+    "Audit checks intentionally assert desired behavior and fail for confirmed defects; separate config excludes them from default suite."
+  ],
+  "baselineAudit": {
+    "passed": 2,
+    "failed": 19,
+    "skipped": 2,
+    "checks": [
+      {
+        "name": "F01: Better Auth rejects an expired database verification on consume",
+        "status": "failed",
+        "failure": "AssertionError: expected { id: 'v1', \u2026(5) } to be null"
+      },
+      {
+        "name": "F02: tx.delete honors a false additional predicate even when PK is supplied",
+        "status": "failed",
+        "failure": "AssertionError: expected [ [ TransactWriteCommand{ \u2026(6) } ] ] to have a length of +0 but got 1"
+      },
+      {
+        "name": "F03: update compare-and-set permits only one of two concurrent writers",
+        "status": "failed",
+        "failure": "AssertionError: expected [ { id: 'u1', name: 'A' }, \u2026(1) ] to have a length of 1 but got 2"
+      },
+      {
+        "name": "F04: email uniqueness is maintained by ordinary adapter.update",
+        "status": "failed",
+        "failure": "AssertionError: expected false to be true // Object.is equality"
+      },
+      {
+        "name": "F04: ordinary adapter.delete releases the email claim",
+        "status": "failed",
+        "failure": "AssertionError: expected false to be true // Object.is equality"
+      },
+      {
+        "name": "F05: unchanged email is a valid transactional update",
+        "status": "failed",
+        "failure": "Error: promise rejected \"DynamoAdapterError: Transaction contains \u2026 { code: '\u2026' }\" instead of resolving"
+      },
+      {
+        "name": "F06: GSI key fields never appear in Query FilterExpression",
+        "status": "failed",
+        "failure": "AssertionError: expected true to be false // Object.is equality"
+      },
+      {
+        "name": "F07: sparse-index sort loads the sort field before choosing the first row",
+        "status": "failed",
+        "failure": "AssertionError: expected 'Zoe' to be 'Amy' // Object.is equality"
+      },
+      {
+        "name": "F07: BatchGet hydration preserves the ordered query result",
+        "status": "failed",
+        "failure": "AssertionError: expected [ 'u2', 'u1' ] to deeply equal [ 'u1', 'u2' ]"
+      },
+      {
+        "name": "F08: tx.deleteMany after tx.update actually removes that row",
+        "status": "failed",
+        "failure": "AssertionError: expected false to be true // Object.is equality"
+      },
+      {
+        "name": "F09: disabling the bulk limit does not silently truncate at 100",
+        "status": "failed",
+        "failure": "Error: promise resolved \"100\" instead of rejecting"
+      },
+      {
+        "name": "F10: tx.updateMany refreshes numeric TTL alongside expiresAt",
+        "status": "failed",
+        "failure": "AssertionError: expected [ 'expiresAt', 'updatedAt', 'id' ] to include 'ttl'"
+      },
+      {
+        "name": "F11: a future TTL range read still returns matching live rows",
+        "status": "failed",
+        "failure": "AssertionError: expected null to match object { id: 'v1' }"
+      },
+      {
+        "name": "F12: null equality includes an absent nullable field",
+        "status": "failed",
+        "failure": "AssertionError: expected null not to be null"
+      },
+      {
+        "name": "F13: scan budget stops pagination before all pages are fetched",
+        "status": "failed",
+        "failure": "AssertionError: expected 5 to be less than 5"
+      },
+      {
+        "name": "F14: existing-row tx.update restores Date output fields",
+        "status": "failed",
+        "failure": "AssertionError: expected '2026-09-12T13:05:34.538Z' to be an instance of Date"
+      },
+      {
+        "name": "F03: GSI consume retains its predicate as an atomic delete condition",
+        "status": "failed",
+        "failure": "AssertionError: expected undefined to be truthy"
+      },
+      {
+        "name": "F15: insensitive mode is rejected consistently for PK and scan plans",
+        "status": "failed",
+        "failure": "Error: promise resolved \"{ name: 'Before', \u2026(6) }\" instead of rejecting"
+      },
+      {
+        "name": "F16: Better Auth 1.7 concurrent increments retain both increments",
+        "status": "skipped",
+        "failure": ""
+      },
+      {
+        "name": "F16: Better Auth 1.7 transaction exposes incrementOne",
+        "status": "skipped",
+        "failure": ""
+      },
+      {
+        "name": "F17: transactional create applies configured operation middleware",
+        "status": "failed",
+        "failure": "AssertionError: expected \"spy\" to be called once, but got 0 times"
+      },
+      {
+        "name": "control: ordinary findOne rejects the same false extra predicate as F02",
+        "status": "passed",
+        "failure": ""
+      },
+      {
+        "name": "control: primary-key consumeOne emits its extra condition atomically",
+        "status": "passed",
+        "failure": ""
+      }
+    ]
+  },
+  "latestAudit": {
+    "passed": 2,
+    "failed": 21,
+    "skipped": 0,
+    "checks": [
+      {
+        "name": "F01: Better Auth rejects an expired database verification on consume",
+        "status": "failed",
+        "failure": "AssertionError: expected { id: 'v1', \u2026(5) } to be null"
+      },
+      {
+        "name": "F02: tx.delete honors a false additional predicate even when PK is supplied",
+        "status": "failed",
+        "failure": "AssertionError: expected [ [ TransactWriteCommand{ \u2026(6) } ] ] to have a length of +0 but got 1"
+      },
+      {
+        "name": "F03: update compare-and-set permits only one of two concurrent writers",
+        "status": "failed",
+        "failure": "AssertionError: expected [ { id: 'u1', name: 'A' }, \u2026(1) ] to have a length of 1 but got 2"
+      },
+      {
+        "name": "F04: email uniqueness is maintained by ordinary adapter.update",
+        "status": "failed",
+        "failure": "AssertionError: expected false to be true // Object.is equality"
+      },
+      {
+        "name": "F04: ordinary adapter.delete releases the email claim",
+        "status": "failed",
+        "failure": "AssertionError: expected false to be true // Object.is equality"
+      },
+      {
+        "name": "F05: unchanged email is a valid transactional update",
+        "status": "failed",
+        "failure": "Error: promise rejected \"DynamoAdapterError: Transaction contains \u2026 { code: '\u2026' }\" instead of resolving"
+      },
+      {
+        "name": "F06: GSI key fields never appear in Query FilterExpression",
+        "status": "failed",
+        "failure": "AssertionError: expected true to be false // Object.is equality"
+      },
+      {
+        "name": "F07: sparse-index sort loads the sort field before choosing the first row",
+        "status": "failed",
+        "failure": "AssertionError: expected 'Zoe' to be 'Amy' // Object.is equality"
+      },
+      {
+        "name": "F07: BatchGet hydration preserves the ordered query result",
+        "status": "failed",
+        "failure": "AssertionError: expected [ 'u2', 'u1' ] to deeply equal [ 'u1', 'u2' ]"
+      },
+      {
+        "name": "F08: tx.deleteMany after tx.update actually removes that row",
+        "status": "failed",
+        "failure": "AssertionError: expected false to be true // Object.is equality"
+      },
+      {
+        "name": "F09: disabling the bulk limit does not silently truncate at 100",
+        "status": "failed",
+        "failure": "Error: promise resolved \"100\" instead of rejecting"
+      },
+      {
+        "name": "F10: tx.updateMany refreshes numeric TTL alongside expiresAt",
+        "status": "failed",
+        "failure": "AssertionError: expected [ 'expiresAt', 'updatedAt', 'id' ] to include 'ttl'"
+      },
+      {
+        "name": "F11: a future TTL range read still returns matching live rows",
+        "status": "failed",
+        "failure": "AssertionError: expected null to match object { id: 'v1' }"
+      },
+      {
+        "name": "F12: null equality includes an absent nullable field",
+        "status": "failed",
+        "failure": "AssertionError: expected null not to be null"
+      },
+      {
+        "name": "F13: scan budget stops pagination before all pages are fetched",
+        "status": "failed",
+        "failure": "AssertionError: expected 5 to be less than 5"
+      },
+      {
+        "name": "F14: existing-row tx.update restores Date output fields",
+        "status": "failed",
+        "failure": "AssertionError: expected '2026-09-12T13:05:35.498Z' to be an instance of Date"
+      },
+      {
+        "name": "F03: GSI consume retains its predicate as an atomic delete condition",
+        "status": "failed",
+        "failure": "AssertionError: expected undefined to be truthy"
+      },
+      {
+        "name": "F15: insensitive mode is rejected consistently for PK and scan plans",
+        "status": "failed",
+        "failure": "Error: promise resolved \"{ name: 'Before', \u2026(6) }\" instead of rejecting"
+      },
+      {
+        "name": "F16: Better Auth 1.7 concurrent increments retain both increments",
+        "status": "failed",
+        "failure": "AssertionError: expected 1 to be 2 // Object.is equality"
+      },
+      {
+        "name": "F16: Better Auth 1.7 transaction exposes incrementOne",
+        "status": "failed",
+        "failure": "AssertionError: expected 'undefined' to be 'function' // Object.is equality"
+      },
+      {
+        "name": "F17: transactional create applies configured operation middleware",
+        "status": "failed",
+        "failure": "AssertionError: expected \"spy\" to be called once, but got 0 times"
+      },
+      {
+        "name": "control: ordinary findOne rejects the same false extra predicate as F02",
+        "status": "passed",
+        "failure": ""
+      },
+      {
+        "name": "control: primary-key consumeOne emits its extra condition atomically",
+        "status": "passed",
+        "failure": ""
+      }
+    ]
+  }
+}

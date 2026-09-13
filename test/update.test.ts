@@ -4,38 +4,38 @@ import { makeConfig } from "./helpers";
 
 // Mock the AWS SDK
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({
+  UpdateCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "UpdateCommand",
-  })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "GetCommand",
-  })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "QueryCommand",
-  })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "ScanCommand",
-  })),
-  PutCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  PutCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "PutCommand",
-  })),
-  DeleteCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  DeleteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "DeleteCommand",
-  })),
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  BatchGetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "BatchGetCommand",
-  })),
-  BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({
+  }; }),
+  BatchWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return {
     ...input,
     _type: "BatchWriteCommand",
-  })),
+  }; }),
 }));
 
 function makeDocClient(sendImpl: (cmd: any) => Promise<any>) {
@@ -96,7 +96,7 @@ describe("update", () => {
     // ExpressionAttributeValues should contain the new name value
     expect(Object.keys(calls[0].ExpressionAttributeValues).length).toBeGreaterThan(0);
     const vals: any = calls[0].ExpressionAttributeValues;
-    const valRefs = Object.keys(vals);
+    const valRefs = Object.keys(vals).filter(key => key.startsWith(":v"));
     expect(valRefs.length).toBe(1);
     expect(vals[valRefs[0]!]).toBe("Alice Updated");
   });
@@ -286,7 +286,7 @@ describe("update", () => {
       update: { name: "Alice Updated" },
     });
 
-    expect(calls[0].ConditionExpression).toBe("attribute_exists(#pk)");
+    expect(calls[0].ConditionExpression).toContain("attribute_exists(#pk)");
     expect(calls[0].ExpressionAttributeNames).toHaveProperty("#pk", "id");
   });
 
@@ -309,7 +309,7 @@ describe("update", () => {
     });
 
     const vals = calls[0].ExpressionAttributeValues;
-    const valKeys = Object.keys(vals);
+    const valKeys = Object.keys(vals).filter(key => key.startsWith(":v"));
     // Only one value (for "name" — not "id")
     expect(valKeys.length).toBe(1);
     expect(vals[valKeys[0]!]).toBe("Renamed");
@@ -352,7 +352,7 @@ describe("update", () => {
     });
 
     const vals = calls[0].ExpressionAttributeValues;
-    const valKeys = Object.keys(vals);
+    const valKeys = Object.keys(vals).filter(key => key.startsWith(":v"));
     // Only accessToken should remain
     expect(valKeys.length).toBe(1);
   });
@@ -396,7 +396,7 @@ describe("update", () => {
     });
 
     const vals: any = calls[0].ExpressionAttributeValues;
-    const valRefs = Object.keys(vals);
+    const valRefs = Object.keys(vals).filter(key => key.startsWith(":v"));
     // Should have 2 values (name + updatedAt)
     expect(valRefs.length).toBe(2);
     // Find the value that is the ISO string

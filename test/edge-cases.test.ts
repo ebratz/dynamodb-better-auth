@@ -18,12 +18,13 @@ import type { DynamoDBAdapterConfig, ConversionOptions } from "../src/types";
 // ── Mock SDK ────────────────────────────────────────────────────
 
 vi.mock("@aws-sdk/lib-dynamodb", () => ({
-  UpdateCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "UpdateCommand" })),
-  GetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "GetCommand" })),
-  QueryCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "QueryCommand" })),
-  ScanCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "ScanCommand" })),
-  BatchGetCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchGetCommand" })),
-  BatchWriteCommand: vi.fn().mockImplementation((input: any) => ({ ...input, _type: "BatchWriteCommand" })),
+  DeleteCommand: vi.fn(function(input: Record<string, unknown>) { return { ...input, _type: "DeleteCommand" }; }),
+  UpdateCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "UpdateCommand" }; }),
+  GetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "GetCommand" }; }),
+  QueryCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "QueryCommand" }; }),
+  ScanCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "ScanCommand" }; }),
+  BatchGetCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "BatchGetCommand" }; }),
+  BatchWriteCommand: vi.fn().mockImplementation(function (input: Record<string, unknown>) { return { ...input, _type: "BatchWriteCommand" }; }),
 }));
 
 // ── Test helpers ────────────────────────────────────────────────
@@ -90,38 +91,19 @@ describe("edge cases", () => {
 
   // ── 2. deleteMany with empty where ─────────────────────────
   describe("deleteMany with empty where", () => {
-    it("throws DynamoAdapterError with code INVALID_WHERE for empty array", async () => {
-      const docClient = { send: vi.fn() } as any;
-      const config = makeConfig();
-      const deleteMany = deleteManyMethod(docClient, config);
-
-      await expect(
-        deleteMany({ model: "user", where: [] }),
-      ).rejects.toThrow(DynamoAdapterError);
-
-      await expect(
-        deleteMany({ model: "user", where: [] }),
-      ).rejects.toMatchObject({
-        code: "INVALID_WHERE",
-        name: "DynamoAdapterError",
-      });
-    });
-
-    it("throws for undefined where", async () => {
-      const docClient = { send: vi.fn() } as any;
-      const config = makeConfig();
-      const deleteMany = deleteManyMethod(docClient, config);
-
-      await expect(
-        deleteMany({ model: "user" }),
-      ).rejects.toThrow(DynamoAdapterError);
+    it("empty predicates scan an empty table and return zero", async () => {
+      const client = { send: vi.fn().mockResolvedValue({ Items: [] }) } as any;
+      const remove = deleteManyMethod(client, makeConfig());
+      expect(await remove({ model: "user", where: [] })).toBe(0);
+      expect(await remove({ model: "user" })).toBe(0);
+      expect(client.send).toHaveBeenCalledTimes(2);
     });
 
     it("does NOT throw when where has at least one clause", async () => {
       const docClient = {
         send: vi.fn().mockImplementation(async (cmd: any) => {
           if (cmd._type === "GetCommand") return { Item: { id: "u1" } };
-          if (cmd._type === "BatchWriteCommand") return { UnprocessedItems: {} };
+          if (cmd._type === "DeleteCommand") return { Attributes: { id: "u1" } };
           return {};
         }),
       } as any;

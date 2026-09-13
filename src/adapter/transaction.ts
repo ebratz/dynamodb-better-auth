@@ -12,10 +12,10 @@
  * applies the framework's transformWhereClause / model-name mapping on the
  * way in and transformOutput on the way out, mirroring the non-tx pipeline.
  *
- * KNOWN LIMITATION — no read-your-writes: reads query DynamoDB directly and
- * cannot see writes still sitting in the buffer. txUpdate compensates for
- * the common create-then-update case by patching a buffered Put in place;
- * everything else sees pre-transaction state until commit.
+ * Reads overlay buffered writes but do not provide snapshot isolation. Reading
+ * a table with pending writes may require a scan bounded by maxScanItems.
+ * Repeated mutations remain restricted by DynamoDB's single-action-per-item
+ * rule; write handlers resolve database pre-state except explicit coalescing.
  *
  * - update eagerly reads pre-state via findOne, then buffers Update.
  * - consumeOne eagerly captures the item, then buffers conditional Delete.
@@ -37,11 +37,13 @@ import {
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { DynamoDBAdapterConfig, WhereClause } from "../types";
 import { generateToken } from "../helpers/uuid";
-import { runTransactionMiddleware } from "../helpers/apply-middleware";
+import { applyMiddleware, runTransactionMiddleware } from "../helpers/apply-middleware";
 import { getKeySchema } from "../helpers/key-builder";
 import { DynamoAdapterError } from "../errors";
 import { resolveDocClient } from "./client";
 
+import { incrementPatch, type IncrementArgs } from "./methods/increment-one";
+import { txRead } from "./tx-read";
 import { txCreate } from "./tx-create";
 import { txUpdate } from "./tx-update";
 import { txUpdateMany } from "./tx-update-many";
@@ -128,17 +130,19 @@ export function createTransactionWrapper(
 
     // ── txAdapter ────────────────────────────────────────────
     const txAdapter: Record<string, any> = {
-      // ── Reads (non-transactional, go directly to DDB) ────
+      // ── Reads with a buffered-write overlay ──────────────
       // Wrapped for contract parity: transformWhereClause on the way in,
       // transformOutput on the way out — the tx callback must behave like
       // the framework-level adapter.
       findOne: async (args: { model: string; where: WhereClause[]; select?: string[] }) => {
         const h = getHelpers();
-        const res = await nativeAdapter.findOne({
+        const query = {
           ...args,
           model: mapModel(args.model),
           where: cleanWhere(args.model, args.where, "findOne") ?? [],
-        });
+        };
+        const buffered = await txRead(ctx, { ...query, limit: 1 });
+        const res = buffered ? buffered[0] : await nativeAdapter.findOne(query);
         if (!res) return null;
         return h.transformOutput(res, h.getDefaultModelName(args.model), args.select);
       },
@@ -151,23 +155,33 @@ export function createTransactionWrapper(
         select?: string[];
       }) => {
         const h = getHelpers();
-        const rows = await nativeAdapter.findMany({
+        const query = {
           ...args,
           model: mapModel(args.model),
           where: cleanWhere(args.model, args.where, "findMany") ?? [],
-        });
+          select: args.select?.map(field => h.getFieldName?.({ model: args.model, field }) ?? field),
+          sortBy: args.sortBy ? { ...args.sortBy, field: h.getFieldName?.({ model: args.model, field: args.sortBy.field }) ?? args.sortBy.field } : undefined,
+        };
+        const rows = await txRead(ctx, { ...query, limit: args.limit ?? 100 }) ?? await nativeAdapter.findMany(query);
         const defaultModel = h.getDefaultModelName(args.model);
-        return Promise.all(rows.map((r) => h.transformOutput(r, defaultModel)));
+        return Promise.all(rows.map((r) => h.transformOutput(r, defaultModel, args.select)));
       },
       count: async (args: { model: string; where?: WhereClause[] }) => {
-        return nativeAdapter.count({
+        const query = {
           ...args,
           model: mapModel(args.model),
           where: cleanWhere(args.model, args.where, "count"),
-        });
+        };
+        const buffered = await txRead(ctx, query);
+        return buffered ? buffered.length : nativeAdapter.count(query);
       },
 
       // ── Buffered writes (extracted handlers) ──────────────
+      incrementOne: async (args: IncrementArgs) => {
+        const row = await txAdapter.findOne({ model: args.model, where: args.where });
+        if (!row) return null;
+        return txAdapter.update({ model: args.model, where: args.where, update: incrementPatch(row, args) });
+      },
       create:     (args: any) => txCreate(ctx, args),
       update:     (args: any) => txUpdate(ctx, args),
       updateMany: (args: any) => txUpdateMany(ctx, args),
@@ -175,6 +189,12 @@ export function createTransactionWrapper(
       deleteMany: (args: any) => txDeleteMany(ctx, args),
       consumeOne: (args: any) => txConsumeOne(ctx, args),
     };
+
+    const afterCommit: Array<() => Promise<void>> = [];
+    for (const operation of ["create", "update", "updateMany", "delete", "deleteMany", "consumeOne"]) {
+      const name = operation[0].toUpperCase() + operation.slice(1);
+      txAdapter[operation] = applyMiddleware(config.extensions ?? [], name, txAdapter[operation], hook => afterCommit.push(hook));
+    }
 
     // ── Execute callback ──────────────────────────────────────
     const result = await cb(txAdapter);
@@ -217,6 +237,7 @@ export function createTransactionWrapper(
       }
     }
 
+    for (const hook of afterCommit) await hook();
     return result;
   };
 }

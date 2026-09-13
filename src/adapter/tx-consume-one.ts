@@ -14,6 +14,7 @@
  * until the transaction resolves.
  */
 
+import { writeCondition, snapshotWhere } from "../helpers/write-condition";
 import { getKeySchema } from "../helpers/key-builder";
 import { assertTransactionCapacity } from "../helpers/assert-capacity";
 import { toDefaultModelName } from "../helpers/model-name";
@@ -73,11 +74,10 @@ export async function txConsumeOne(
     Delete: {
       TableName: tableName,
       Key: key,
-      ConditionExpression: "attribute_exists(#pk)",
-      ExpressionAttributeNames: { "#pk": schema.pkField },
+      ...writeCondition(snapshotWhere(item), schema.pkField, item),
       ReturnValuesOnConditionCheckFailure: "ALL_OLD" as const,
     },
   });
 
-  return item;
+  return helpers.transformOutput(item, helpers.getDefaultModelName(model));
 }

@@ -104,6 +104,8 @@ export function withTtlAttribute<T extends Record<string, any>>(
 ): T {
   const field = resolveTtlField(config, model);
   if (field === undefined || !(field in data)) return data;
+  // DynamoDB ignores a non-numeric TTL. Clear stale deadlines on nullable expiry.
+  if (data[field] === null) return { ...data, [ttlAttributeName(config)]: null };
 
   const ttl = ttlFromExpiryValue((data as Record<string, any>)[field]);
   if (ttl === undefined) return data;

@@ -29,14 +29,17 @@ export async function measureLatency<T>(
   if (!metrics) return fn();
 
   const start = Date.now();
+  let failure: Error | undefined;
   try {
-    const result = await fn();
-    const durationMs = Date.now() - start;
-    metrics({ operation, model, durationMs });
-    return result;
-  } catch (err: any) {
-    const durationMs = Date.now() - start;
-    metrics({ operation, model, durationMs, error: err });
+    return await fn();
+  } catch (err) {
+    failure = err instanceof Error ? err : new Error(String(err));
     throw err;
+  } finally {
+    try {
+      metrics({ operation, model, durationMs: Date.now() - start, ...(failure ? { error: failure } : {}) });
+    } catch {
+      // Instrumentation must not change a committed write or mask its error.
+    }
   }
 }
